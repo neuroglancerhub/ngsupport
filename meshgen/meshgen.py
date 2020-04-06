@@ -4,6 +4,7 @@ import logging
 import numpy as np
 
 from flask import Flask, Response, request, abort
+from requests import RequestException
 
 from neuclease import configure_default_logging
 from neuclease.util import Timer
@@ -33,13 +34,69 @@ MAX_SCALE = 7
 
 @app.route('/')
 def generate_and_store_mesh():
+    """
+    Generate a mesh (in ngmesh format) for a single body,
+    upload it to a dvid keyvalue instance, and also return it.
+
+    Pass DVID Authorization token via the 'Authorization' header,
+    which will be forwarded to dvid requests.
+
+    All other parameters should be passed via the query string.
+
+    Parameters
+    ----------
+    dvid:
+        dvid server. Required.
+
+    uuid:
+        Dvid uuid to read from and write to.
+
+    segmentation:
+        Name of the labelmap segmentation instance to read from.
+        Default: 'segmentation'
+
+    body:
+        Body ID for which a mesh will be generated. Required.
+
+    mesh_kv:
+        Which keyvalue instance to store the mesh into.
+        Default: 'segmentation_meshes'
+
+    scale:
+        Which scale of segmentation data to generate the mesh from.
+        If not provided, scale-1 will be used if it won't require too much RAM,
+        otherwise a higher scale is automatically chosen.
+
+    decimation:
+        The effective decimation fraction to use.
+        For example, 0.1 means "decimate until only 10% of the vertices remain".
+        Set this value assuming your mesh will be generated from scale-1 data.
+        If scale > 1 is used, then this number will be automatically adjusted
+        accordingly.
+
+    user:
+        The user name associated with this request.
+        Will be forwarded to dvid requests.
+
+    Returns
+    -------
+    The contents of the generated ngmesh.
+
+    Side Effects
+    ------------
+    Stores the generated ngmesh into the instance specified
+    keyvalue instance before returning it.
+    """
     try:
         body = request.args['body']
     except KeyError as ex:
         abort(Response(f"Missing required parameter: {ex.args[0]}", 400))
 
     with Timer(f"Body {body}: Handling request", logger):
-        return _generate_and_store_mesh()
+        try:
+            return _generate_and_store_mesh()
+        except RequestException as ex:
+            return Response(f"Error encountered while accessing dvid server:\n{ex}", 500, content_type='text/plain')
 
 
 def _generate_and_store_mesh():
@@ -110,6 +167,7 @@ def _generate_and_store_mesh():
         logger.info(f"Body {body}: Preparing ngmesh")
         mesh_bytes = mesh.serialize(fmt='ngmesh')
 
+    # TODO: Optionally skip this step (e.g. in case the UUID is locked)
     with Timer(f"Body {body}: Storing {body}.ngmesh in DVID ({len(mesh_bytes)/MB:.1f} MB)"):
         post_key(dvid, uuid, mesh_kv, f"{body}.ngmesh", mesh_bytes, session=dvid_session)
 
@@ -124,10 +182,9 @@ def select_scale(box):
         box //= 2
 
     if scale > MAX_SCALE:
-        abort(Response(
-                "Can't generate mesh for body {body}: "
-                "The bounding box would be too large, even at scale {MAX_SCALE}",
-                500))
+        abort(Response("Can't generate mesh for body {body}: "
+                       "The bounding box would be too large, even at scale {MAX_SCALE}",
+                       500))
 
     return scale
 
