@@ -4,3 +4,6 @@
 
 # To build and upload container with Google Cloudbuild registry:
 gcloud builds submit --tag gcr.io/dvid-em/meshgen
+
+# To build FASTER using the most recent container as the cache:
+gcloud builds submit --config cloudbuild.yaml
