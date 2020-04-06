@@ -3,7 +3,8 @@ import logging
 
 import numpy as np
 
-from flask import Flask, Response, request
+from flask import Flask, Response, request, make_response
+from flask_cors import CORS
 from requests import RequestException
 
 from neuclease import configure_default_logging
@@ -15,6 +16,9 @@ from neuclease.dvid.rle import rle_ranges_box
 from vol2mesh import Mesh
 
 app = Flask(__name__)
+
+# TODO: Limit origin list here: CORS(app, origins=[...])
+CORS(app)
 
 logger = logging.getLogger(__name__)
 configure_default_logging()
@@ -73,6 +77,7 @@ def generate_and_store_mesh():
         Set this value assuming your mesh will be generated from scale-1 data.
         If scale > 1 is used, then this number will be automatically adjusted
         accordingly.
+        Default: 0.1
 
     user:
         The user name associated with this request.
@@ -171,7 +176,9 @@ def _generate_and_store_mesh():
     with Timer(f"Body {body}: Storing {body}.ngmesh in DVID ({len(mesh_bytes)/MB:.1f} MB)"):
         post_key(dvid, uuid, mesh_kv, f"{body}.ngmesh", mesh_bytes, session=dvid_session)
 
-    return mesh_bytes
+    r = make_response(mesh_bytes)
+    r.headers.set('Content-Type', 'application/octet-stream')
+    return r
 
 
 def select_scale(box):
