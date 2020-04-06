@@ -3,7 +3,7 @@ import logging
 
 import numpy as np
 
-from flask import Flask, Response, request, abort
+from flask import Flask, Response, request
 from requests import RequestException
 
 from neuclease import configure_default_logging
@@ -90,7 +90,7 @@ def generate_and_store_mesh():
     try:
         body = request.args['body']
     except KeyError as ex:
-        abort(Response(f"Missing required parameter: {ex.args[0]}", 400))
+        return Response(f"Missing required parameter: {ex.args[0]}", 400)
 
     with Timer(f"Body {body}: Handling request", logger):
         try:
@@ -104,7 +104,7 @@ def _generate_and_store_mesh():
         dvid = request.args['dvid']
         body = request.args['body']
     except KeyError as ex:
-        abort(Response(f"Missing required parameter: {ex.args[0]}", 400))
+        return Response(f"Missing required parameter: {ex.args[0]}", 400)
 
     segmentation = request.args.get('segmentation', 'segmentation')
     mesh_kv = request.args.get('mesh_kv', f'{segmentation}_meshes')
@@ -182,9 +182,9 @@ def select_scale(box):
         box //= 2
 
     if scale > MAX_SCALE:
-        abort(Response("Can't generate mesh for body {body}: "
-                       "The bounding box would be too large, even at scale {MAX_SCALE}",
-                       500))
+        return Response("Can't generate mesh for body {body}: "
+                        "The bounding box would be too large, even at scale {MAX_SCALE}",
+                        500)
 
     return scale
 
