@@ -71,6 +71,10 @@ def generate_and_store_mesh():
         If not provided, scale-1 will be used if it won't require too much RAM,
         otherwise a higher scale is automatically chosen.
 
+    smoothing:
+        How many rounds of laplacian smoothing to apply to the marching cubes result.
+        Default: 2
+
     decimation:
         The effective decimation fraction to use.
         For example, 0.1 means "decimate until only 10% of the vertices remain".
@@ -119,12 +123,15 @@ def _generate_and_store_mesh():
         uuid = find_master(dvid)
 
     scale = request.args.get('scale')
-    smoothing = request.args.get('smoothing', 2)
+    if scale is not None:
+        scale = int(scale)
+
+    smoothing = int(request.args.get('smoothing', 2))
 
     # Note: This is just the effective desired decimation assuming scale-1 data.
     # If we're forced to select a higher scale than scale-1, then we'll increase
     # this number to compensate.
-    decimation = request.args.get('decimation', 0.1)
+    decimation = float(request.args.get('decimation', 0.1))
 
     user = request.args.get('u')
     user = user or request.args.get('user', "UNKNOWN")
