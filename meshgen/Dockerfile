@@ -29,6 +29,11 @@ RUN source /opt/conda/etc/profile.d/conda.sh \
 
 ENV FLYEM_ENV /opt/conda/envs/flyem
 
+# Ensure that flyem/bin is on the PATH
+# FIXME: I suppose the more proper thing to do would be
+#        to call 'conda activate' in a custom ENTRYPOINT script.
+ENV PATH ${FLYEM_ENV}/bin:${PATH}
+
 # Copy local code to the container image.
 ENV APP_HOME /meshgen
 WORKDIR $APP_HOME
