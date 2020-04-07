@@ -70,6 +70,9 @@ def generate_and_store_mesh():
         Which scale of segmentation data to generate the mesh from.
         If not provided, scale-1 will be used if it won't require too much RAM,
         otherwise a higher scale is automatically chosen.
+        Note:
+            If scale > 2, the mesh will NOT be stored to DVID, to avoid storing
+            low-quality meshes permanently.
 
     smoothing:
         How many rounds of laplacian smoothing to apply to the marching cubes result.
@@ -180,8 +183,11 @@ def _generate_and_store_mesh():
         mesh_bytes = mesh.serialize(fmt='ngmesh')
 
     # TODO: Optionally skip this step (e.g. in case the UUID is locked)
-    with Timer(f"Body {body}: Storing {body}.ngmesh in DVID ({len(mesh_bytes)/MB:.1f} MB)"):
-        post_key(dvid, uuid, mesh_kv, f"{body}.ngmesh", mesh_bytes, session=dvid_session)
+    if scale > 2:
+        logger.info(f"Body {body}: Not storing to dvid (scale > 2)")
+    else:
+        with Timer(f"Body {body}: Storing {body}.ngmesh in DVID ({len(mesh_bytes)/MB:.1f} MB)"):
+            post_key(dvid, uuid, mesh_kv, f"{body}.ngmesh", mesh_bytes, session=dvid_session)
 
     r = make_response(mesh_bytes)
     r.headers.set('Content-Type', 'application/octet-stream')
