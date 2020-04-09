@@ -11,16 +11,20 @@ from neuclease import configure_default_logging
 configure_default_logging()
 logger = logging.getLogger(__name__)
 
-from .meshgen import generate_and_store_mesh
+from .small_mesh import generate_and_store_mesh
+from .locate_body import locate_body
 
 app = Flask(__name__)
 
 # TODO: Limit origin list here: CORS(app, origins=[...])
 CORS(app)
 
-@app.route('/smallmesh')
-def smallmesh():
+@app.route('/small-mesh')
+def _small_mesh():
     return generate_and_store_mesh()
 
-if __name__ == "__main__":
-    app.run(debug=True,host='0.0.0.0',port=int(os.environ.get('PORT', 8080)))
+@app.route('/locate-body')
+def _locate_body():
+    return locate_body()
+
+

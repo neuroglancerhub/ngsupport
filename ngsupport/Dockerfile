@@ -19,7 +19,9 @@ RUN yum update -y \
 COPY install-miniconda.sh /opt/docker/bin/install-miniconda.sh
 RUN /opt/docker/bin/install-miniconda.sh
 
-# Add a timestamp for the build. Also, bust the cache.
+# Add a timestamp for the build.
+# This busts the docker fs layer cache to ensure that we're
+# getting the latest version/build of the following dependencies.
 RUN date > container-build-date.txt
 
 # Install packages

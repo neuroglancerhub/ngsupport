@@ -1,4 +1,5 @@
 import os
+import copy
 import logging
 
 import numpy as np
@@ -132,9 +133,13 @@ def _generate_and_store_mesh():
     user = request.args.get('u')
     user = user or request.args.get('user', "UNKNOWN")
 
+    # TODO: The global cache of DVID sessions should store authentication info
+    #       and use it as part of the key lookup, to avoid creating a new dvid
+    #       session for every single cloud call!
     dvid_session = default_dvid_session('cloud-meshgen', user)
     auth = request.headers.get('Authorization')
     if auth:
+        dvid_session = copy.deepcopy(dvid_session)
         dvid_session.headers['Authorization'] = auth
 
     with Timer(f"Body {body}: Fetching coarse sparsevol"):
