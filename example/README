@@ -1,0 +1,13 @@
+This directory was based on the "Hello World" example for Google Cloud Run,
+but uses a different container (one suitable for running conda-based code).
+
+To build and upload container with Google Cloudbuild registry:
+
+    gcloud builds submit --tag gcr.io/dvid-em/helloworld
+
+To build FASTER using the most recent container as the cache:
+
+    gcloud builds submit --config cloudbuild.yaml
+
+NOTE: Neither of the above commands will actually DEPLOY the container.
+      The easiest way to do that is via the google cloud console.

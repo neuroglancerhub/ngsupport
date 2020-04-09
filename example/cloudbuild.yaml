@@ -1,0 +1,15 @@
+steps:
+ - name: 'gcr.io/cloud-builders/docker'
+   entrypoint: 'bash'
+   args:
+   - '-c'
+   - |
+     docker pull gcr.io/dvid-em/helloworld:latest || exit 0
+ - name: 'gcr.io/cloud-builders/docker'
+   args: [
+            'build',
+            '-t', 'gcr.io/dvid-em/helloworld:latest',
+            '--cache-from', 'gcr.io/dvid-em/helloworld:latest',
+            '.'
+          ]
+images: ['gcr.io/dvid-em/helloworld:latest']
