@@ -19,11 +19,6 @@ RUN yum update -y \
 COPY install-miniconda.sh /opt/docker/bin/install-miniconda.sh
 RUN /opt/docker/bin/install-miniconda.sh
 
-# Add a timestamp for the build.
-# This busts the docker fs layer cache to ensure that we're
-# getting the latest version/build of the following dependencies.
-RUN date > container-build-date.txt
-
 # Install packages
 # FIXME: Use environment.yml
 RUN source /opt/conda/etc/profile.d/conda.sh \
@@ -39,7 +34,7 @@ ENV PATH ${FLYEM_ENV}/bin:${PATH}
 # Copy local code to the container image.
 ENV APP_HOME /ngsupport-home
 WORKDIR $APP_HOME
-COPY ngsupport ${APP_HOME}
+COPY ngsupport ${APP_HOME}/ngsupport
 
 ENV PYTHONPATH=${APP_HOME}
 
@@ -47,4 +42,4 @@ ENV PYTHONPATH=${APP_HOME}
 # webserver, with one worker process and 8 threads.
 # For environments with multiple CPU cores, increase the number of workers
 # to be equal to the cores available.
-CMD exec ${FLYEM_ENV}/bin/gunicorn --bind :$PORT --workers 1 --threads 8 ngsupport:app
+CMD exec ${FLYEM_ENV}/bin/gunicorn --bind :$PORT --workers 4 --threads 2 ngsupport.app:app
