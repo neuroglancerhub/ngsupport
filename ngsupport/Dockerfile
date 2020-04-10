@@ -16,6 +16,10 @@ RUN yum update -y \
             curl \
  && yum clean all
 
+# Set timezone to EST/EDT
+RUN rm /etc/localtime \
+ && ln -s /usr/share/zoneinfo/EST5EDT /etc/localtime
+
 COPY install-miniconda.sh /opt/docker/bin/install-miniconda.sh
 RUN /opt/docker/bin/install-miniconda.sh
 
