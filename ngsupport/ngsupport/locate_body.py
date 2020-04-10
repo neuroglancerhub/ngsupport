@@ -6,6 +6,47 @@ from requests import RequestException
 from neuclease.dvid import default_dvid_session, find_master, generate_sample_coordinate
 
 def locate_body():
+    """
+    Locate a body and return an arbitrary point that lies within it.
+
+    Downloads the coarse sparsevol DVID, selects the "middle" (in the
+    scan-order sense) block within the sparsevol representation,
+    and downloads that block of segmentation at scale-0.
+    Then selects the "middle" coordinate within the voxels of that
+    block which match your body ID.
+
+    Note: The returned point corresponds to the middle of the
+    body's sparse representation, but is otherwise arbitrary.
+    It is not the center of mass, nor is necessarily near the center
+    of the body's bounding box.
+
+    Pass DVID Authorization token via the 'Authorization' header,
+    which will be forwarded to dvid requests.
+
+    All other parameters should be passed via the query string.
+
+    Parameters
+    ----------
+    dvid:
+        dvid server. Required.
+
+    uuid:
+        Dvid uuid to read from and write to.
+
+    segmentation:
+        Name of the labelmap segmentation instance to read from.
+        Default: 'segmentation'
+
+    body:
+        Body ID.
+
+    user:
+        The user name associated with this request.
+        Will be forwarded to dvid requests.
+
+    Returns:
+        JSON [x,y,z]
+    """
     try:
         dvid = request.args['dvid']
         body = request.args['body']
