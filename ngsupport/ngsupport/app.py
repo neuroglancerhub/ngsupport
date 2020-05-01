@@ -17,7 +17,8 @@ from .locate_body import locate_body
 app = Flask(__name__)
 
 # TODO: Limit origin list here: CORS(app, origins=[...])
-CORS(app)
+CORS(app, origins=r'.*\.janelia\.org', supports_credentials=True)
+#CORS(app)
 
 @app.route('/small-mesh')
 def _small_mesh():
