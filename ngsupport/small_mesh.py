@@ -5,7 +5,7 @@ import logging
 import numpy as np
 
 from flask import Response, request, make_response
-from requests import RequestException
+from requests import RequestException, HTTPError
 
 from neuclease import configure_default_logging
 from neuclease.util import Timer
@@ -164,7 +164,7 @@ def _generate_and_store_mesh():
 
     with Timer(f"Body {body}: Fetching scale-{scale} sparsevol"):
         mask, mask_box = fetch_sparsevol(dvid, uuid, segmentation, body, scale=scale, format='mask', session=dvid_session)
-        #np.save(f'mask-{body}-s{scale}.npy', mask)
+        # np.save(f'mask-{body}-s{scale}.npy', mask)
 
         # Pad with a thin halo of zeros to avoid holes in the mesh at the box boundary
         mask = np.pad(mask, 1)
@@ -180,12 +180,18 @@ def _generate_and_store_mesh():
         logger.info(f"Body {body}: Preparing ngmesh")
         mesh_bytes = mesh.serialize(fmt='ngmesh')
 
-    # TODO: Optionally skip this step (e.g. in case the UUID is locked)
     if scale > 2:
         logger.info(f"Body {body}: Not storing to dvid (scale > 2)")
     else:
         with Timer(f"Body {body}: Storing {body}.ngmesh in DVID ({len(mesh_bytes)/MB:.1f} MB)"):
-            post_key(dvid, uuid, mesh_kv, f"{body}.ngmesh", mesh_bytes, session=dvid_session)
+            try:
+                post_key(dvid, uuid, mesh_kv, f"{body}.ngmesh", mesh_bytes, session=dvid_session)
+            except HTTPError as ex:
+                err = ex.response.content.decode('utf-8')
+                if 'locked node' in err:
+                    logger.info("Body {body}: Not storing to dvid (uuid {uuid[:4]} is locked).")
+                else:
+                    logger.warning("Mesh could not be cached to dvid:\n{err}")
 
     r = make_response(mesh_bytes)
     r.headers.set('Content-Type', 'application/octet-stream')
