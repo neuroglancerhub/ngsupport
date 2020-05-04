@@ -1,3 +1,9 @@
+ngsupport
+=========
+
+Serverless utilties to support neuroglancer-based proofreading,
+based on Google's "Cloud Run" service.
+
 This directory contains the setup for a container that can be used with
 Google's "Cloud Run" service to run various serverless cloud functions
 that support our neuroglancer-based proofreading protocols, such as
