@@ -1,4 +1,3 @@
-import os
 import copy
 import logging
 
@@ -9,8 +8,8 @@ from requests import RequestException, HTTPError
 
 from neuclease import configure_default_logging
 from neuclease.util import Timer
-from neuclease.dvid import (default_dvid_session, find_master, fetch_volume_box, fetch_labelmap_voxels,
-                            fetch_sparsevol_coarse, fetch_sparsevol, post_key)
+from neuclease.dvid import (default_dvid_session, find_master, fetch_sparsevol_coarse,
+                            runlength_decode_from_ranges_to_mask, fetch_sparsevol, post_key)
 from neuclease.dvid.rle import rle_ranges_box
 
 from vol2mesh import Mesh
@@ -30,6 +29,7 @@ MAX_SCALE = 7
 # TODO: Should this function check DVID to see if a mesh already exists
 #       for the requested body, or should we assume the caller doesn't
 #       want that one?
+
 
 def generate_and_store_mesh():
     """
@@ -142,7 +142,7 @@ def _generate_and_store_mesh():
         dvid_session = copy.deepcopy(dvid_session)
         dvid_session.headers['Authorization'] = auth
 
-    with Timer(f"Body {body}: Fetching coarse sparsevol"):
+    with Timer(f"Body {body}: Fetching coarse sparsevol", logger):
         svc_ranges = fetch_sparsevol_coarse(dvid, uuid, segmentation, body, format='ranges', session=dvid_session)
 
     #svc_mask, _svc_box = fetch_sparsevol_coarse(dvid, uuid, segmentation, body, format='mask', session=dvid_session)
@@ -157,20 +157,29 @@ def _generate_and_store_mesh():
         # if necessary due to bounding-box RAM usage.
         scale = max(1, select_scale(box_s0))
 
-    if scale > 1:
-        # If we chose a low-res scale, then we
-        # can reduce the decimation as needed.
-        decimation = min(1.0, decimation * 4**(scale-1))
+    if scale <= 3:
+        with Timer(f"Body {body}: Fetching scale-{scale} sparsevol", logger):
+            mask, mask_box = fetch_sparsevol(dvid, uuid, segmentation, body, scale=scale, format='mask', session=dvid_session)
+    else:
+        # Sparsevol-coarse has the benefit of returning a contiguous mask.
+        # Therefore, it's actually a little better than other low-res scales,
+        # despite the fact that it's defined at at scale-6.
+        logger.info(f"Body {body}: Using coarse sparsevol (scale-6)")
+        scale = 6
+        mask, mask_box = runlength_decode_from_ranges_to_mask(svc_ranges, box_s6)
 
-    with Timer(f"Body {body}: Fetching scale-{scale} sparsevol"):
-        mask, mask_box = fetch_sparsevol(dvid, uuid, segmentation, body, scale=scale, format='mask', session=dvid_session)
         # np.save(f'mask-{body}-s{scale}.npy', mask)
 
         # Pad with a thin halo of zeros to avoid holes in the mesh at the box boundary
         mask = np.pad(mask, 1)
         mask_box += [(-1, -1, -1), (1, 1, 1)]
 
-    with Timer(f"Body {body}: Computing mesh"):
+    if scale > 1:
+        # If we chose a low-res scale, then we
+        # can reduce the decimation as needed.
+        decimation = min(1.0, decimation * 4**(scale-1))
+
+    with Timer(f"Body {body}: Computing mesh", logger):
         # The 'ilastik' marching cubes implementation supports smoothing during mesh construction.
         mesh = Mesh.from_binary_vol(mask, mask_box * VOXEL_NM * (2**scale), smoothing_rounds=smoothing)
 
@@ -183,7 +192,7 @@ def _generate_and_store_mesh():
     if scale > 2:
         logger.info(f"Body {body}: Not storing to dvid (scale > 2)")
     else:
-        with Timer(f"Body {body}: Storing {body}.ngmesh in DVID ({len(mesh_bytes)/MB:.1f} MB)"):
+        with Timer(f"Body {body}: Storing {body}.ngmesh in DVID ({len(mesh_bytes)/MB:.1f} MB)", logger):
             try:
                 post_key(dvid, uuid, mesh_kv, f"{body}.ngmesh", mesh_bytes, session=dvid_session)
             except HTTPError as ex:
