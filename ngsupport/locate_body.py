@@ -39,7 +39,10 @@ def locate_body():
         Default: 'segmentation'
 
     body:
-        Body ID.
+        Body ID (or supervoxels ID, if supervoxels=true).
+
+    supervoxels:
+        If 'true', interpret the 'body' as a supervoxel ID, and locate that supervoxel.
 
     user:
         The user name associated with this request.
