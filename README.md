@@ -19,3 +19,9 @@ To build FASTER using the most recent container as the cache:
 
 NOTE: Neither of the above commands will actually DEPLOY the container.
       The easiest way to do that is via the google cloud console.
+
+
+Alteratively, just use docker to build locally:
+
+    docker build . -t gcr.io/flyem-private/ngsupport
+    docker push  gcr.io/flyem-private/ngsupport
