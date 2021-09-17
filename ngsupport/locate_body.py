@@ -5,6 +5,7 @@ from requests import RequestException
 
 from neuclease.dvid import default_dvid_session, find_master, generate_sample_coordinate
 
+
 def locate_body():
     """
     Locate a body and return an arbitrary point that lies within it.
@@ -57,8 +58,8 @@ def locate_body():
 
     uuid = request.args.get('uuid') or find_master(dvid)
     segmentation = request.args.get('segmentation', 'segmentation')
+    supervoxels = request.args.get('supervoxels', 'false').lower()
     try:
-        supervoxels = request.args.get('segmentation', 'false').lower()
         supervoxels = {'true': True, 'false': False}[supervoxels]
     except KeyError:
         return Response(f"Invalid argument for 'supervoxels' parameter: '{supervoxels}'")
