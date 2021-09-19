@@ -46,4 +46,21 @@ ENV PYTHONPATH=${APP_HOME}
 # webserver, with one worker process and 8 threads.
 # For environments with multiple CPU cores, increase the number of workers
 # to be equal to the cores available.
-CMD exec ${FLYEM_ENV}/bin/gunicorn --bind :$PORT --workers 4 --threads 2 ngsupport.app:app
+#
+#   Note
+#   ----
+#
+#   For some reason we're seeing an error:
+#
+#       Invalid ENTRYPOINT. [name: "gcr.io/flyem-private/ngsupport@sha256:cd0581de54ec430af44f959716379527ec1b116aa93602c14bc09ed6372c31cd" error: "Invalid command \"/bin/sh\": file not found" ].
+#
+#   And one way to fix it might be to use the 'exec' form of the CMD directive:
+#   https://stackoverflow.com/questions/62158782/invalid-command-bin-sh-file-not-found
+#
+#   Unfortunately, that means we can't use environment variables ($FLYEM_ENV, $PORT).
+#   So I'm hard-coding them for now.
+#
+#CMD exec ${FLYEM_ENV}/bin/gunicorn --bind 0.0.0.0:$PORT --workers 4 --threads 2 ngsupport.app:app
+
+CMD ["/opt/conda/envs/flyem/bin/gunicorn", "--bind", "0.0.0.0:8080", "--workers", "4", "--threads", "2", "ngsupport.app:app"]
+
