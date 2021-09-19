@@ -1,4 +1,4 @@
-FROM centos:7
+FROM centos:8
 
 #MAINTAINER janelia-flyem <janelia-flyem@janelia.hhmi.org>
 
@@ -6,7 +6,7 @@ FROM centos:7
 ENV LANG en_US.UTF-8
 
 # Resolves a nasty NOKEY warning that appears when using yum.
-RUN rpm --import /etc/pki/rpm-gpg/RPM-GPG-KEY-CentOS-7
+#RUN rpm --import /etc/pki/rpm-gpg/RPM-GPG-KEY-CentOS-8
 
 # Install basic requirements.
 RUN yum update -y \
