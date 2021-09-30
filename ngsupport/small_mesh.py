@@ -170,9 +170,9 @@ def _generate_and_store_mesh():
 
         # np.save(f'mask-{body}-s{scale}.npy', mask)
 
-        # Pad with a thin halo of zeros to avoid holes in the mesh at the box boundary
-        mask = np.pad(mask, 1)
-        mask_box += [(-1, -1, -1), (1, 1, 1)]
+    # Pad with a thin halo of zeros to avoid holes in the mesh at the box boundary
+    mask = np.pad(mask, 1)
+    mask_box += [(-1, -1, -1), (1, 1, 1)]
 
     if scale > 1:
         # If we chose a low-res scale, then we
