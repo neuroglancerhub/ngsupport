@@ -1,3 +1,4 @@
+import os
 import copy
 import logging
 from functools import partial
@@ -162,8 +163,10 @@ def _generate_and_store_mesh():
     else:
         log_prefix = f"Body {body}"
 
+    processes = os.environ.get('NGSUPPORT_PROCESS_POOL', 4)
+
     mesh, scale = generate_small_mesh(dvid, uuid, segmentation, body, scale, supervoxels,
-                                      smoothing, decimation, max_vertices, 4, dvid_session)
+                                      smoothing, decimation, max_vertices, processes, dvid_session)
 
     logger.info(f"{log_prefix}: Preparing ngmesh")
     mesh_bytes = mesh.serialize(fmt='ngmesh')
