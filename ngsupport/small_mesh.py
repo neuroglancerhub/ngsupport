@@ -1,6 +1,8 @@
 import copy
 import logging
 from functools import partial
+from operator import le
+from turtle import down
 
 import numpy as np
 
@@ -8,7 +10,7 @@ from flask import Response, request, make_response
 from requests import RequestException, HTTPError
 
 from neuclease import configure_default_logging
-from neuclease.util import Timer, compute_parallel
+from neuclease.util import Timer, compute_parallel, downsample_mask
 from neuclease.dvid import (default_dvid_session, find_master, fetch_sparsevol_coarse,
                             fetch_sparsevol, post_key, fetch_commit)
 from neuclease.dvid.rle import blockwise_masks_from_ranges
@@ -133,7 +135,7 @@ def _generate_and_store_mesh():
     if scale is not None:
         scale = int(scale)
 
-    smoothing = int(request.args.get('smoothing', 3))
+    smoothing = int(request.args.get('smoothing', 2))
 
     # Note: This is just the effective desired decimation assuming scale-1 data.
     # If we're forced to select a higher scale than scale-1, then we'll increase
@@ -184,39 +186,71 @@ def generate_small_mesh(dvid, uuid, segmentation, body, scale=5, supervoxels=Fal
     with Timer(f"{log_prefix}: Fetching coarse sparsevol", logger):
         svc_ranges = fetch_sparsevol_coarse(dvid, uuid, segmentation, body, supervoxels=supervoxels, format='ranges', session=dvid_session)
 
-    if scale is None:
-        # Pick a scale -- aim for 100 blocks
-        s0_blocks = svc_ranges[:, 3] - svc_ranges[:, 2] + 1
-        s6_boxes, masks = blockwise_masks_from_ranges(svc_ranges, (64,64,64))
-        logger.info(f"{log_prefix}: Coarse sparsevol covers {s0_blocks} blocks at scale-0, {len(s6_boxes)} blocks at scale-6")
-        for scale in range(0, 7):
-            estimated_blocks = len(s6_boxes) * (2**(6-scale))**3
-            if estimated_blocks < 100:
-                logger.info(f"{log_prefix}: Selected scale-{scale} ({estimated_blocks} estimated blocks)")
-                break
-
-    if scale == 6:
-        logger.info(f"{log_prefix}: Using coarse sparsevol (scale-6)")
-        rng = svc_ranges
-    else:
-        with Timer(f"{log_prefix}: Fetching scale-{scale} sparsevol", logger):
+    if scale is not None:
+        try:
             rng = fetch_sparsevol(dvid, uuid, segmentation, body, scale=scale, supervoxels=supervoxels, format='ranges')
+        except HTTPError as ex:
+            if ex.response.status_code == 404:
+                logger.error(f"{log_prefix}: Body doesn't exist at the requested scale (scale-{scale}).")
+            raise
+        block_boxes, masks = blockwise_masks_from_ranges(rng, (64, 64, 64), halo=4)
+        block_boxes = block_boxes * VOXEL_NM * (2**scale)
 
-    if scale > 1:
+    else:
+        # Pick a scale -- aim for 100 blocks
+        s0_blocks = (svc_ranges[:, 3] - svc_ranges[:, 2] + 1).sum()
+        s6_boxes, _ = blockwise_masks_from_ranges(svc_ranges, (64,64,64))
+        logger.info(f"{log_prefix}: Coarse sparsevol covers {s0_blocks} blocks at scale-0, {len(s6_boxes)} blocks at scale-6")
+        if len(s6_boxes) > 100:
+            logger.info(f"{log_prefix}: Using coarse sparsevol (scale-6)")
+            rng = svc_ranges
+            scale = 6
+        else:
+            # Try scales from 3 to scale 1
+            for scale in range(3, 0, -1):
+                with Timer(f"{log_prefix}: Fetching scale-{scale} sparsevol", logger):
+                    try:
+                        rng = fetch_sparsevol(dvid, uuid, segmentation, body, scale=scale, supervoxels=supervoxels, format='ranges')
+                    except HTTPError as ex:
+                        # If the body is too small to exist at this scale, DVID returns 404.
+                        # See https://github.com/janelia-flyem/dvid/issues/369
+                        if ex.response.status_code == 404:
+                            continue
+                if len(rng) == 0:
+                    continue
+
+                block_boxes, masks = blockwise_masks_from_ranges(rng, (64, 64, 64), halo=4)
+                block_boxes = block_boxes * VOXEL_NM * (2**scale)
+                if len(block_boxes) > 50:
+                    break
+
+    logger.info(f"{log_prefix}: Selected scale-{scale} ({len(block_boxes)} blocks)")
+
+    downsample_scale = 0
+    while len(block_boxes) > 200:
+        downsample_scale += 1
+        # Too many blocks. Reduce scale with continuity-preserving downsampling
+        block_boxes, masks = blockwise_masks_from_ranges(rng, 64 * (2**downsample_scale), halo=4)
+        block_boxes = block_boxes * VOXEL_NM * (2**scale)
+        logger.info(f"{log_prefix}: Downsampling further to scale-{scale+downsample_scale} ({len(block_boxes)} blocks)")
+        masks = map(partial(downsample_mask, factor=2), masks)
+
+    if scale + downsample_scale > 1:
         # If we chose a low-res scale, then we
         # can reduce the decimation as needed.
-        decimation = min(1.0, decimation * 4**(scale-1))
+        decimation = min(1.0, decimation * 4**(scale + downsample_scale - 1))
 
-    logger.info(f"{log_prefix}: Initializing mesh")
-    boxes, masks = blockwise_masks_from_ranges(rng, (64, 64, 64), halo=4)
-    mesh = mesh_from_binary_blocks(masks, VOXEL_NM * (2**scale) * boxes, stitch=False, presmoothing=smoothing, predecimation=decimation, processes=processes)
+    logger.info(f"{log_prefix}: Constructing mesh")
+    mesh = mesh_from_binary_blocks(masks, block_boxes, stitch=False,
+                                   presmoothing=smoothing, predecimation=decimation, processes=processes)
 
     decimation = min(1.0, max_vertices / len(mesh.vertices_zyx))
     if decimation < 1.0:
-        logger.info(f"{log_prefix}: Applying additional decimation to mesh at fraction {decimation}")
-        mesh.simplify_openmesh(decimation)
+        logger.info(f"{log_prefix}: Default mesh has too many vertices ({len(mesh.vertices_zyx):.2e} > {max_vertices:.2e})")
+        logger.info(f"{log_prefix}: Applying additional decimation to mesh with fraction {decimation:.3f}")
+        mesh.simplify(decimation)
 
-    return mesh, scale
+    return mesh, scale + downsample_scale
 
 
 def mesh_from_binary_blocks(downsampled_binary_blocks, fullres_boxes_zyx, stitch=True, presmoothing=0, predecimation=1.0, processes=4):
@@ -229,7 +263,7 @@ def mesh_from_binary_blocks(downsampled_binary_blocks, fullres_boxes_zyx, stitch
         logger.warn(msg)
     num_blocks = getattr(fullres_boxes_zyx, '__len__', lambda: None)()
     gen_mesh = partial(_gen_mesh, smoothing=presmoothing, decimation=predecimation)
-    meshes = compute_parallel(gen_mesh, zip(downsampled_binary_blocks, fullres_boxes_zyx), starmap=True, total=num_blocks, processes=4)
+    meshes = compute_parallel(gen_mesh, zip(downsampled_binary_blocks, fullres_boxes_zyx), starmap=True, total=num_blocks, show_progress=False, processes=4)
     mesh = Mesh.concatenate_meshes(meshes)
     if stitch:
         mesh.stitch_adjacent_faces()
