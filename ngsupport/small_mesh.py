@@ -84,7 +84,7 @@ def generate_and_store_mesh():
         If scale > 1 is used, then this number will be automatically adjusted
         accordingly.
 
-        Default: 0.01 (low quality, but lighter weight for speed and lots of meshes)
+        Default: 0.025 (low quality, but lighter weight for speed and lots of meshes)
 
     max_vertices:
         Decimate the mesh further until it has this many vertices or fewer.
@@ -141,7 +141,7 @@ def _generate_and_store_mesh():
     # Note: This is just the effective desired decimation assuming scale-1 data.
     # If we're forced to select a higher scale than scale-1, then we'll increase
     # this number to compensate.
-    decimation = float(request.args.get('decimation', 0.01))
+    decimation = float(request.args.get('decimation', 0.025))
 
     max_vertices = float(request.args.get('max_vertices', 200e3))
 
