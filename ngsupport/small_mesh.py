@@ -142,7 +142,7 @@ def _generate_and_store_mesh():
         dvid_session = copy.deepcopy(dvid_session)
         dvid_session.headers['Authorization'] = auth
 
-    with Timer(f"Body {body}: Fetching coarse sparsevol", logger):
+    with Timer(f"{log_prefix}: Fetching coarse sparsevol", logger):
         svc_ranges = fetch_sparsevol_coarse(dvid, uuid, segmentation, body, format='ranges', session=dvid_session)
 
     #svc_mask, _svc_box = fetch_sparsevol_coarse(dvid, uuid, segmentation, body, format='mask', session=dvid_session)
@@ -150,21 +150,21 @@ def _generate_and_store_mesh():
 
     box_s6 = rle_ranges_box(svc_ranges)
     box_s0 = box_s6*(2**6)
-    logger.info(f"Body {body}: Bounding box: {box_s0[:, ::-1].tolist()}")
+    logger.info(f"{log_prefix}: Bounding box: {box_s0[:, ::-1].tolist()}")
 
     if scale is None:
         # Use scale 1 if possible or a higher scale
         # if necessary due to bounding-box RAM usage.
-        scale = max(1, select_scale(box_s0))
+        scale = max(1, select_scale(box_s0, body))
 
     if scale <= 3:
-        with Timer(f"Body {body}: Fetching scale-{scale} sparsevol", logger):
+        with Timer(f"{log_prefix}: Fetching scale-{scale} sparsevol", logger):
             mask, mask_box = fetch_sparsevol(dvid, uuid, segmentation, body, scale=scale, format='mask', session=dvid_session)
     else:
         # Sparsevol-coarse has the benefit of returning a contiguous mask.
         # Therefore, it's actually a little better than other low-res scales,
         # despite the fact that it's defined at at scale-6.
-        logger.info(f"Body {body}: Using coarse sparsevol (scale-6)")
+        logger.info(f"{log_prefix}: Using coarse sparsevol (scale-6)")
         scale = 6
         mask, mask_box = runlength_decode_from_ranges_to_mask(svc_ranges, box_s6)
 
@@ -179,35 +179,35 @@ def _generate_and_store_mesh():
         # can reduce the decimation as needed.
         decimation = min(1.0, decimation * 4**(scale-1))
 
-    with Timer(f"Body {body}: Computing mesh", logger):
+    with Timer(f"{log_prefix}: Computing mesh", logger):
         # The 'ilastik' marching cubes implementation supports smoothing during mesh construction.
         mesh = Mesh.from_binary_vol(mask, mask_box * VOXEL_NM * (2**scale), smoothing_rounds=smoothing)
 
-        logger.info(f"Body {body}: Decimating mesh at fraction {decimation}")
+        logger.info(f"{log_prefix}: Decimating mesh at fraction {decimation}")
         mesh.simplify(decimation)
 
-        logger.info(f"Body {body}: Preparing ngmesh")
+        logger.info(f"{log_prefix}: Preparing ngmesh")
         mesh_bytes = mesh.serialize(fmt='ngmesh')
 
     if scale > 2:
-        logger.info(f"Body {body}: Not storing to dvid (scale > 2)")
+        logger.info(f"{log_prefix}: Not storing to dvid (scale > 2)")
     else:
-        with Timer(f"Body {body}: Storing {body}.ngmesh in DVID ({len(mesh_bytes)/MB:.1f} MB)", logger):
+        with Timer(f"{log_prefix}: Storing {body}.ngmesh in DVID ({len(mesh_bytes)/MB:.1f} MB)", logger):
             try:
                 post_key(dvid, uuid, mesh_kv, f"{body}.ngmesh", mesh_bytes, session=dvid_session)
             except HTTPError as ex:
                 err = ex.response.content.decode('utf-8')
                 if 'locked node' in err:
-                    logger.info("Body {body}: Not storing to dvid (uuid {uuid[:4]} is locked).")
+                    logger.info(f"{log_prefix}: Not storing to dvid (uuid {uuid[:4]} is locked).")
                 else:
-                    logger.warning("Mesh could not be cached to dvid:\n{err}")
+                    logger.warning(f"Mesh could not be cached to dvid:\n{err}")
 
     r = make_response(mesh_bytes)
     r.headers.set('Content-Type', 'application/octet-stream')
     return r
 
 
-def select_scale(box):
+def select_scale(box, body):
     scale = 0
     box = np.array(box)
     while np.prod(box[1] - box[0]) > MAX_BOX_VOLUME:
@@ -215,8 +215,8 @@ def select_scale(box):
         box //= 2
 
     if scale > MAX_SCALE:
-        return Response("Can't generate mesh for body {body}: "
-                        "The bounding box would be too large, even at scale {MAX_SCALE}",
+        return Response(f"Can't generate mesh for body {body}: "
+                        f"The bounding box would be too large, even at scale {MAX_SCALE}",
                         500)
 
     return scale
