@@ -79,11 +79,12 @@ def generate_and_store_mesh():
 
     decimation:
         The effective decimation fraction to use.
-        For example, 0.1 means "decimate until only 10% of the vertices remain".
+        For example, 0.01 means "decimate until only 1% of the vertices remain".
         Set this value assuming your mesh will be generated from scale-1 data.
         If scale > 1 is used, then this number will be automatically adjusted
         accordingly.
-        Default: 0.05
+
+        Default: 0.01 (low quality, but lighter weight for speed and lots of meshes)
 
     max_vertices:
         Decimate the mesh further until it has this many vertices or fewer.
@@ -140,7 +141,7 @@ def _generate_and_store_mesh():
     # Note: This is just the effective desired decimation assuming scale-1 data.
     # If we're forced to select a higher scale than scale-1, then we'll increase
     # this number to compensate.
-    decimation = float(request.args.get('decimation', 0.05))
+    decimation = float(request.args.get('decimation', 0.01))
 
     max_vertices = float(request.args.get('max_vertices', 200e3))
 
@@ -178,7 +179,7 @@ def _generate_and_store_mesh():
 
 
 def generate_small_mesh(dvid, uuid, segmentation, body, scale=5, supervoxels=False,
-                        smoothing=3, decimation=0.1, max_vertices=200e3, processes=4,
+                        smoothing=3, decimation=0.01, max_vertices=200e3, processes=4,
                         dvid_session=None):
     if supervoxels:
         log_prefix = f"SV {body}"
