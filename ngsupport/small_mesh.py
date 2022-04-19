@@ -3,7 +3,6 @@ import copy
 import logging
 from functools import partial
 from operator import le
-from turtle import down
 
 import numpy as np
 
@@ -202,9 +201,11 @@ def generate_small_mesh(dvid, uuid, segmentation, body, scale=5, supervoxels=Fal
     else:
         # Pick a scale -- aim for 100 blocks
         s0_blocks = (svc_ranges[:, 3] - svc_ranges[:, 2] + 1).sum()
-        s6_boxes, _ = blockwise_masks_from_ranges(svc_ranges, (64,64,64))
-        logger.info(f"{log_prefix}: Coarse sparsevol covers {s0_blocks} blocks at scale-0, {len(s6_boxes)} blocks at scale-6")
-        if len(s6_boxes) > 100:
+        block_boxes, masks = blockwise_masks_from_ranges(svc_ranges, (64,64,64))
+        block_boxes = block_boxes * VOXEL_NM * (2**6)
+
+        logger.info(f"{log_prefix}: Coarse sparsevol covers {s0_blocks} blocks at scale-0, {len(block_boxes)} blocks at scale-6")
+        if len(block_boxes) > 100:
             logger.info(f"{log_prefix}: Using coarse sparsevol (scale-6)")
             rng = svc_ranges
             scale = 6
@@ -230,7 +231,7 @@ def generate_small_mesh(dvid, uuid, segmentation, body, scale=5, supervoxels=Fal
     logger.info(f"{log_prefix}: Selected scale-{scale} ({len(block_boxes)} blocks)")
 
     downsample_scale = 0
-    while len(block_boxes) > 200:
+    while len(block_boxes) > 200 and scale != 6:
         downsample_scale += 1
         # Too many blocks. Reduce scale with continuity-preserving downsampling
         block_boxes, masks = blockwise_masks_from_ranges(rng, 64 * (2**downsample_scale), halo=4)

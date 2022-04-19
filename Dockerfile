@@ -26,7 +26,7 @@ RUN /opt/docker/bin/install-miniconda.sh
 # Install packages
 # FIXME: Use environment.yml
 RUN source /opt/conda/etc/profile.d/conda.sh \
- && conda create -n flyem python=3.7 flask flask-cors gunicorn neuclease vol2mesh
+ && conda create -n flyem python=3.7 flask flask-cors gunicorn vol2mesh neuclease
 
 ENV FLYEM_ENV /opt/conda/envs/flyem
 
