@@ -182,10 +182,13 @@ def generate_small_mesh(dvid, uuid, segmentation, body, scale=5, supervoxels=Fal
 
     if scale is None:
         # Pick a scale -- aim for 100 blocks
+        s0_blocks = svc_ranges[:, 3] - svc_ranges[:, 2] + 1
         s6_boxes, masks = blockwise_masks_from_ranges(svc_ranges, (64,64,64))
+        logger.info(f"{log_prefix}: Coarse sparsevol covers {s0_blocks} blocks at scale-0, {len(s6_boxes)} blocks at scale-6")
         for scale in range(0, 7):
             estimated_blocks = len(s6_boxes) * (2**(6-scale))**3
             if estimated_blocks < 100:
+                logger.info(f"{log_prefix}: Selected scale-{scale} ({estimated_blocks} estimated blocks)")
                 break
 
     if scale == 6:
