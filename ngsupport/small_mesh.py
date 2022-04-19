@@ -1,5 +1,6 @@
 import copy
 import logging
+from functools import partial
 
 import numpy as np
 
@@ -7,7 +8,7 @@ from flask import Response, request, make_response
 from requests import RequestException, HTTPError
 
 from neuclease import configure_default_logging
-from neuclease.util import Timer
+from neuclease.util import Timer, compute_parallel
 from neuclease.dvid import (default_dvid_session, find_master, fetch_sparsevol_coarse,
                             fetch_sparsevol, post_key, fetch_commit)
 from neuclease.dvid.rle import blockwise_masks_from_ranges
@@ -159,7 +160,8 @@ def _generate_and_store_mesh():
     else:
         log_prefix = f"Body {body}"
 
-    mesh, scale = generate_small_mesh(dvid, uuid, segmentation, body, scale, supervoxels, smoothing, decimation, max_vertices, dvid_session)
+    mesh, scale = generate_small_mesh(dvid, uuid, segmentation, body, scale, supervoxels,
+                                      smoothing, decimation, max_vertices, 4, dvid_session)
 
     logger.info(f"{log_prefix}: Preparing ngmesh")
     mesh_bytes = mesh.serialize(fmt='ngmesh')
@@ -171,7 +173,9 @@ def _generate_and_store_mesh():
     return r
 
 
-def generate_small_mesh(dvid, uuid, segmentation, body, scale=5, supervoxels=False, smoothing=3, decimation=0.1, max_vertices=200e3, dvid_session=None):
+def generate_small_mesh(dvid, uuid, segmentation, body, scale=5, supervoxels=False,
+                        smoothing=3, decimation=0.1, max_vertices=200e3, processes=4,
+                        dvid_session=None):
     if supervoxels:
         log_prefix = f"SV {body}"
     else:
@@ -198,24 +202,44 @@ def generate_small_mesh(dvid, uuid, segmentation, body, scale=5, supervoxels=Fal
         with Timer(f"{log_prefix}: Fetching scale-{scale} sparsevol", logger):
             rng = fetch_sparsevol(dvid, uuid, segmentation, body, scale=scale, supervoxels=supervoxels, format='ranges')
 
-    logger.info(f"{log_prefix}: Initializing mesh")
-    boxes, masks = blockwise_masks_from_ranges(rng, (64, 64, 64), halo=1)
-    mesh = Mesh.from_binary_blocks(masks, VOXEL_NM * (2**scale) * boxes, stitch=True, method='ilastik')
-
-    logger.info(f"{log_prefix}: Smoothing mesh ({smoothing} rounds)")
-    mesh.laplacian_smooth(smoothing)
-
     if scale > 1:
         # If we chose a low-res scale, then we
         # can reduce the decimation as needed.
         decimation = min(1.0, decimation * 4**(scale-1))
 
-    decimation = min(1.0, max_vertices / len(mesh.vertices_zyx))
+    logger.info(f"{log_prefix}: Initializing mesh")
+    boxes, masks = blockwise_masks_from_ranges(rng, (64, 64, 64), halo=4)
+    mesh = mesh_from_binary_blocks(masks, VOXEL_NM * (2**scale) * boxes, stitch=False, presmoothing=smoothing, predecimation=decimation, processes=processes)
 
-    logger.info(f"{log_prefix}: Decimating mesh at fraction {decimation}")
-    mesh.simplify_openmesh(decimation)
+    decimation = min(1.0, max_vertices / len(mesh.vertices_zyx))
+    if decimation < 1.0:
+        logger.info(f"{log_prefix}: Applying additional decimation to mesh at fraction {decimation}")
+        mesh.simplify_openmesh(decimation)
 
     return mesh, scale
+
+
+def mesh_from_binary_blocks(downsampled_binary_blocks, fullres_boxes_zyx, stitch=True, presmoothing=0, predecimation=1.0, processes=4):
+    """
+    Mesh.from_binary_blocks(), but adapted to use multiple processes.
+    """
+    if stitch and (presmoothing != 0 or predecimation != 1.0):
+        msg = ("You're using stitch=True, but you're applying presmoothing or "
+               "predecimation, so the block meshes won't stitch properly.")
+        logger.warn(msg)
+    num_blocks = getattr(fullres_boxes_zyx, '__len__', lambda: None)()
+    gen_mesh = partial(_gen_mesh, smoothing=presmoothing, decimation=predecimation)
+    meshes = compute_parallel(gen_mesh, zip(downsampled_binary_blocks, fullres_boxes_zyx), starmap=True, total=num_blocks, processes=4)
+    mesh = Mesh.concatenate_meshes(meshes)
+    if stitch:
+        mesh.stitch_adjacent_faces()
+    return mesh
+
+
+def _gen_mesh(binary_block, fullres_box, smoothing, decimation):
+    m = Mesh.from_binary_vol(binary_block, fullres_box, method='ilastik', smoothing_rounds=smoothing)
+    m.simplify(decimation)
+    return m
 
 
 def store_mesh(dvid, uuid, mesh_kv, mesh_bytes, body, scale, supervoxels, dvid_session):
