@@ -9,8 +9,8 @@ from requests import RequestException, HTTPError
 from neuclease import configure_default_logging
 from neuclease.util import Timer
 from neuclease.dvid import (default_dvid_session, find_master, fetch_sparsevol_coarse,
-                            runlength_decode_from_ranges_to_mask, fetch_sparsevol, post_key)
-from neuclease.dvid.rle import rle_ranges_box
+                            fetch_sparsevol, post_key, fetch_commit)
+from neuclease.dvid.rle import blockwise_masks_from_ranges
 
 from vol2mesh import Mesh
 
@@ -18,7 +18,6 @@ logger = logging.getLogger(__name__)
 configure_default_logging()
 
 MB = 2**20
-MAX_BOX_VOLUME = 128*MB
 
 # FIXME: For now, this resolution is hard-coded.
 VOXEL_NM = 8.0
@@ -83,6 +82,9 @@ def generate_and_store_mesh():
         accordingly.
         Default: 0.1
 
+    max_vertices:
+        Decimate the mesh further until it has this many vertices or fewer.
+
     user:
         The user name associated with this request.
         Will be forwarded to dvid requests.
@@ -130,21 +132,24 @@ def _generate_and_store_mesh():
     if scale is not None:
         scale = int(scale)
 
-    smoothing = int(request.args.get('smoothing', 2))
+    smoothing = int(request.args.get('smoothing', 3))
 
     # Note: This is just the effective desired decimation assuming scale-1 data.
     # If we're forced to select a higher scale than scale-1, then we'll increase
     # this number to compensate.
     decimation = float(request.args.get('decimation', 0.1))
 
+    max_vertices = float(request.args.get('max_vertices', 200e3))
+
     user = request.args.get('u')
     user = user or request.args.get('user', "UNKNOWN")
+
+    auth = request.headers.get('Authorization')
 
     # TODO: The global cache of DVID sessions should store authentication info
     #       and use it as part of the key lookup, to avoid creating a new dvid
     #       session for every single cloud call!
     dvid_session = default_dvid_session('cloud-meshgen', user)
-    auth = request.headers.get('Authorization')
     if auth:
         dvid_session = copy.deepcopy(dvid_session)
         dvid_session.headers['Authorization'] = auth
@@ -154,84 +159,86 @@ def _generate_and_store_mesh():
     else:
         log_prefix = f"Body {body}"
 
-    with Timer(f"{log_prefix}: Fetching coarse sparsevol", logger):
-        svc_ranges = fetch_sparsevol_coarse(dvid, uuid, segmentation, body, supervoxels=supervoxels, format='ranges', session=dvid_session)
+    mesh, scale = generate_small_mesh(dvid, uuid, segmentation, body, scale, supervoxels, smoothing, decimation, max_vertices, dvid_session)
 
-    #svc_mask, _svc_box = fetch_sparsevol_coarse(dvid, uuid, segmentation, body, format='mask', session=dvid_session)
-    #np.save(f'mask-{body}-svc.npy', svc_mask)
+    logger.info(f"{log_prefix}: Preparing ngmesh")
+    mesh_bytes = mesh.serialize(fmt='ngmesh')
 
-    box_s6 = rle_ranges_box(svc_ranges)
-    box_s0 = box_s6*(2**6)
-    logger.info(f"{log_prefix}: Bounding box: {box_s0[:, ::-1].tolist()}")
-
-    if scale is None:
-        # Use scale 1 if possible or a higher scale
-        # if necessary due to bounding-box RAM usage.
-        scale = max(1, select_scale(box_s0, body))
-
-    if scale <= 3:
-        with Timer(f"{log_prefix}: Fetching scale-{scale} sparsevol", logger):
-            mask, mask_box = fetch_sparsevol(dvid, uuid, segmentation, body, scale=scale,
-                                             supervoxels=supervoxels, format='mask', session=dvid_session)
-    else:
-        # Sparsevol-coarse has the benefit of returning a contiguous mask.
-        # Therefore, it's actually a little better than other low-res scales,
-        # despite the fact that it's defined at at scale-6.
-        logger.info(f"{log_prefix}: Using coarse sparsevol (scale-6)")
-        scale = 6
-        mask, mask_box = runlength_decode_from_ranges_to_mask(svc_ranges, box_s6)
-
-        # np.save(f'mask-{body}-s{scale}.npy', mask)
-
-    # Pad with a thin halo of zeros to avoid holes in the mesh at the box boundary
-    mask = np.pad(mask, 1)
-    mask_box += [(-1, -1, -1), (1, 1, 1)]
-
-    if scale > 1:
-        # If we chose a low-res scale, then we
-        # can reduce the decimation as needed.
-        decimation = min(1.0, decimation * 4**(scale-1))
-
-    with Timer(f"{log_prefix}: Computing mesh", logger):
-        # The 'ilastik' marching cubes implementation supports smoothing during mesh construction.
-        mesh = Mesh.from_binary_vol(mask, mask_box * VOXEL_NM * (2**scale), smoothing_rounds=smoothing)
-
-        logger.info(f"{log_prefix}: Decimating mesh at fraction {decimation}")
-        mesh.simplify(decimation)
-
-        logger.info(f"{log_prefix}: Preparing ngmesh")
-        mesh_bytes = mesh.serialize(fmt='ngmesh')
-
-    if supervoxels:
-        logger.info(f"{log_prefix}: Not storing supervoxel mesh to dvid")
-    elif scale > 2:
-        logger.info(f"{log_prefix}: Not storing to dvid (scale > 2)")
-    else:
-        with Timer(f"{log_prefix}: Storing {body}.ngmesh in DVID ({len(mesh_bytes)/MB:.1f} MB)", logger):
-            try:
-                post_key(dvid, uuid, mesh_kv, f"{body}.ngmesh", mesh_bytes, session=dvid_session)
-            except HTTPError as ex:
-                err = ex.response.content.decode('utf-8')
-                if 'locked node' in err:
-                    logger.info(f"{log_prefix}: Not storing to dvid (uuid {uuid[:4]} is locked).")
-                else:
-                    logger.warning(f"Mesh could not be cached to dvid:\n{err}")
+    store_mesh(dvid, uuid, mesh_kv, mesh_bytes, body, scale, supervoxels, dvid_session)
 
     r = make_response(mesh_bytes)
     r.headers.set('Content-Type', 'application/octet-stream')
     return r
 
 
-def select_scale(box, body):
-    scale = 0
-    box = np.array(box)
-    while np.prod(box[1] - box[0]) > MAX_BOX_VOLUME:
-        scale += 1
-        box //= 2
+def generate_small_mesh(dvid, uuid, segmentation, body, scale=5, supervoxels=False, smoothing=3, decimation=0.1, max_vertices=200e3, dvid_session=None):
+    if supervoxels:
+        log_prefix = f"SV {body}"
+    else:
+        log_prefix = f"Body {body}"
 
-    if scale > MAX_SCALE:
-        return Response(f"Can't generate mesh for body (or supervoxel) {body}: "
-                        f"The bounding box would be too large, even at scale {MAX_SCALE}",
-                        500)
+    with Timer(f"{log_prefix}: Fetching coarse sparsevol", logger):
+        svc_ranges = fetch_sparsevol_coarse(dvid, uuid, segmentation, body, supervoxels=supervoxels, format='ranges', session=dvid_session)
 
-    return scale
+    if scale is None:
+        # Pick a scale -- aim for 100 blocks
+        s6_boxes, masks = blockwise_masks_from_ranges(svc_ranges, (64,64,64))
+        for scale in range(0, 7):
+            estimated_blocks = len(s6_boxes) * (2**(6-scale))**3
+            if estimated_blocks < 100:
+                break
+
+    if scale == 6:
+        logger.info(f"{log_prefix}: Using coarse sparsevol (scale-6)")
+        rng = svc_ranges
+    else:
+        with Timer(f"{log_prefix}: Fetching scale-{scale} sparsevol", logger):
+            rng = fetch_sparsevol(dvid, uuid, segmentation, body, scale=scale, supervoxels=supervoxels, format='ranges')
+
+    logger.info(f"{log_prefix}: Initializing mesh")
+    boxes, masks = blockwise_masks_from_ranges(rng, (64, 64, 64), halo=1)
+    mesh = Mesh.from_binary_blocks(masks, VOXEL_NM * (2**scale) * boxes, stitch=True, method='ilastik')
+
+    logger.info(f"{log_prefix}: Smoothing mesh ({smoothing} rounds)")
+    mesh.laplacian_smooth(smoothing)
+
+    if scale > 1:
+        # If we chose a low-res scale, then we
+        # can reduce the decimation as needed.
+        decimation = min(1.0, decimation * 4**(scale-1))
+
+    decimation = min(1.0, max_vertices / len(mesh.vertices_zyx))
+
+    logger.info(f"{log_prefix}: Decimating mesh at fraction {decimation}")
+    mesh.simplify_openmesh(decimation)
+
+    return mesh, scale
+
+
+def store_mesh(dvid, uuid, mesh_kv, mesh_bytes, body, scale, supervoxels, dvid_session):
+    if supervoxels:
+        log_prefix = f"SV {body}"
+    else:
+        log_prefix = f"Body {body}"
+
+    if supervoxels:
+        logger.info(f"{log_prefix}: Not storing supervoxel mesh to dvid")
+        return False
+
+    if scale and scale > 3:
+        logger.info(f"{log_prefix}: Not storing to dvid (scale > 3)")
+        return False
+
+    if fetch_commit(dvid, uuid):
+        logger.info(f"{log_prefix}: Not storing to dvid (uuid {uuid[:4]} is locked).")
+        return False
+
+    try:
+        with Timer(f"{log_prefix}: Storing {body}.ngmesh in DVID ({len(mesh_bytes)/MB:.1f} MB)", logger):
+            post_key(dvid, uuid, mesh_kv, f"{body}.ngmesh", mesh_bytes, session=dvid_session)
+    except HTTPError as ex:
+        err = ex.response.content.decode('utf-8')
+        logger.warning(f"Mesh could not be cached to dvid:\n{err}")
+        return False
+    else:
+        return True
