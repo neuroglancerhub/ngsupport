@@ -56,6 +56,9 @@ def generate_and_store_mesh():
     body:
         Body ID for which a mesh will be generated. Required.
 
+    supervoxels:
+        If 'true', interpret the 'body' as a supervoxel ID, and generate a supervoxel mesh.
+
     mesh_kv:
         Which keyvalue instance to store the mesh into.
         Default: 'segmentation_meshes'
@@ -114,6 +117,10 @@ def _generate_and_store_mesh():
 
     segmentation = request.args.get('segmentation', 'segmentation')
     mesh_kv = request.args.get('mesh_kv', f'{segmentation}_meshes')
+    supervoxels = request.args.get('supervoxels', 'false')
+    if supervoxels.lower() not in ('false', 'true'):
+        return Response(f"Invalid value for 'supervoxels' parameter: {supervoxels}", 400)
+    supervoxels = (supervoxels.lower() == 'true')
 
     uuid = request.args.get('uuid') or find_master(dvid)
     if not uuid:
@@ -142,8 +149,13 @@ def _generate_and_store_mesh():
         dvid_session = copy.deepcopy(dvid_session)
         dvid_session.headers['Authorization'] = auth
 
+    if supervoxels:
+        log_prefix = f"SV {body}"
+    else:
+        log_prefix = f"Body {body}"
+
     with Timer(f"{log_prefix}: Fetching coarse sparsevol", logger):
-        svc_ranges = fetch_sparsevol_coarse(dvid, uuid, segmentation, body, format='ranges', session=dvid_session)
+        svc_ranges = fetch_sparsevol_coarse(dvid, uuid, segmentation, body, supervoxels=supervoxels, format='ranges', session=dvid_session)
 
     #svc_mask, _svc_box = fetch_sparsevol_coarse(dvid, uuid, segmentation, body, format='mask', session=dvid_session)
     #np.save(f'mask-{body}-svc.npy', svc_mask)
@@ -159,7 +171,8 @@ def _generate_and_store_mesh():
 
     if scale <= 3:
         with Timer(f"{log_prefix}: Fetching scale-{scale} sparsevol", logger):
-            mask, mask_box = fetch_sparsevol(dvid, uuid, segmentation, body, scale=scale, format='mask', session=dvid_session)
+            mask, mask_box = fetch_sparsevol(dvid, uuid, segmentation, body, scale=scale,
+                                             supervoxels=supervoxels, format='mask', session=dvid_session)
     else:
         # Sparsevol-coarse has the benefit of returning a contiguous mask.
         # Therefore, it's actually a little better than other low-res scales,
@@ -189,7 +202,9 @@ def _generate_and_store_mesh():
         logger.info(f"{log_prefix}: Preparing ngmesh")
         mesh_bytes = mesh.serialize(fmt='ngmesh')
 
-    if scale > 2:
+    if supervoxels:
+        logger.info(f"{log_prefix}: Not storing supervoxel mesh to dvid")
+    elif scale > 2:
         logger.info(f"{log_prefix}: Not storing to dvid (scale > 2)")
     else:
         with Timer(f"{log_prefix}: Storing {body}.ngmesh in DVID ({len(mesh_bytes)/MB:.1f} MB)", logger):
@@ -215,7 +230,7 @@ def select_scale(box, body):
         box //= 2
 
     if scale > MAX_SCALE:
-        return Response(f"Can't generate mesh for body {body}: "
+        return Response(f"Can't generate mesh for body (or supervoxel) {body}: "
                         f"The bounding box would be too large, even at scale {MAX_SCALE}",
                         500)
 
