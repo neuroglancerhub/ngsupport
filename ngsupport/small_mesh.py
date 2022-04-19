@@ -245,15 +245,16 @@ def generate_small_mesh(dvid, uuid, segmentation, body, scale=5, supervoxels=Fal
         # can reduce the decimation as needed.
         decimation = min(1.0, decimation * 4**(scale + downsample_scale - 1))
 
-    logger.info(f"{log_prefix}: Constructing mesh")
-    mesh = mesh_from_binary_blocks(masks, block_boxes, stitch=False,
-                                   presmoothing=smoothing, predecimation=decimation, processes=processes)
+    with Timer(f"{log_prefix}: Constructing mesh blockwise", log_start=False):
+        mesh = mesh_from_binary_blocks(masks, block_boxes, stitch=False,
+                                       presmoothing=smoothing, predecimation=decimation,
+                                       processes=processes)
 
     decimation = min(1.0, max_vertices / len(mesh.vertices_zyx))
     if decimation < 1.0:
         logger.info(f"{log_prefix}: Default mesh has too many vertices ({len(mesh.vertices_zyx):.2e} > {max_vertices:.2e})")
-        logger.info(f"{log_prefix}: Applying additional decimation to mesh with fraction {decimation:.3f}")
-        mesh.simplify(decimation)
+        with Timer(f"{log_prefix}: Applying additional decimation to mesh with fraction {decimation:.3f}", log_start=False):
+            mesh.simplify(decimation)
 
     return mesh, scale + downsample_scale
 
