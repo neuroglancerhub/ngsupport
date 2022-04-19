@@ -289,13 +289,16 @@ def store_mesh(dvid, uuid, mesh_kv, mesh_bytes, body, scale, supervoxels, dvid_s
         logger.info(f"{log_prefix}: Not storing supervoxel mesh to dvid")
         return False
 
-    if scale and scale > 3:
-        logger.info(f"{log_prefix}: Not storing to dvid (scale > 3)")
+    if scale and scale > 5:
+        logger.info(f"{log_prefix}: Not storing to dvid (scale too bad)")
         return False
 
     if fetch_commit(dvid, uuid):
-        logger.info(f"{log_prefix}: Not storing to dvid (uuid {uuid[:4]} is locked).")
-        return False
+        if os.environ.get("DVID_ADMIN_TOKEN"):
+            logger.info(f"{log_prefix}: Using DVID_ADMIN_TOKEN to store mesh in LOCKED dvid uuid {uuid[:6]}")
+        else:
+            logger.info(f"{log_prefix}: Not storing to dvid (uuid {uuid[:6]} is locked).")
+            return False
 
     try:
         with Timer(f"{log_prefix}: Storing {body}.ngmesh in DVID ({len(mesh_bytes)/MB:.1f} MB)", logger):
