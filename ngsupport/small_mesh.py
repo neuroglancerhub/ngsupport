@@ -186,7 +186,7 @@ def generate_small_mesh(dvid, uuid, segmentation, body, scale=5, supervoxels=Fal
     else:
         log_prefix = f"Body {body}"
 
-    with Timer(f"{log_prefix}: Fetching coarse sparsevol", logger):
+    with Timer(f"{log_prefix}: Fetching coarse sparsevol", logger, log_start=False):
         svc_ranges = fetch_sparsevol_coarse(dvid, uuid, segmentation, body, supervoxels=supervoxels, format='ranges', session=dvid_session)
 
     if scale is not None:
@@ -211,7 +211,7 @@ def generate_small_mesh(dvid, uuid, segmentation, body, scale=5, supervoxels=Fal
         else:
             # Try scales from 3 to scale 1
             for scale in range(3, 0, -1):
-                with Timer(f"{log_prefix}: Fetching scale-{scale} sparsevol", logger):
+                with Timer(f"{log_prefix}: Fetching scale-{scale} sparsevol", logger, log_start=False):
                     try:
                         rng = fetch_sparsevol(dvid, uuid, segmentation, body, scale=scale, supervoxels=supervoxels, format='ranges')
                     except HTTPError as ex:
@@ -301,7 +301,7 @@ def store_mesh(dvid, uuid, mesh_kv, mesh_bytes, body, scale, supervoxels, dvid_s
             return False
 
     try:
-        with Timer(f"{log_prefix}: Storing {body}.ngmesh in DVID ({len(mesh_bytes)/MB:.1f} MB)", logger):
+        with Timer(f"{log_prefix}: Storing {body}.ngmesh in DVID ({len(mesh_bytes)/MB:.1f} MB)", logger, log_start=False):
             post_key(dvid, uuid, mesh_kv, f"{body}.ngmesh", mesh_bytes, session=dvid_session)
     except HTTPError as ex:
         err = ex.response.content.decode('utf-8')
