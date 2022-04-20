@@ -2,11 +2,11 @@ import os
 import copy
 import logging
 from functools import partial
-from operator import le
 
 import numpy as np
 
 from flask import Response, request, make_response
+import requests
 from requests import RequestException, HTTPError
 
 from neuclease import configure_default_logging
@@ -31,6 +31,10 @@ MAX_SCALE = 7
 # TODO: Should this function check DVID to see if a mesh already exists
 #       for the requested body, or should we assume the caller doesn't
 #       want that one?
+
+NGSUPPORT_SERVICE_BASE = os.environ.get('NGSUPPORT_SERVICE_BASE', 'https://ngsupport-bmcp5imp6q-uk.a.run.app')
+NGSUPPORT_PARALLELIZE_WITH_SERVICE = int(os.environ.get('NGSUPPORT_PARALLELIZE_WITH_SERVICE', 0))
+NGSUPPORT_PROCESS_POOL = int(os.environ.get('NGSUPPORT_PROCESS_POOL', 4))
 
 
 def generate_and_store_mesh():
@@ -163,10 +167,8 @@ def _generate_and_store_mesh():
     else:
         log_prefix = f"Body {body}"
 
-    processes = os.environ.get('NGSUPPORT_PROCESS_POOL', 4)
-
     mesh, scale = generate_small_mesh(dvid, uuid, segmentation, body, scale, supervoxels,
-                                      smoothing, decimation, max_vertices, processes, dvid_session)
+                                      smoothing, decimation, max_vertices, dvid_session)
 
     logger.info(f"{log_prefix}: Preparing ngmesh")
     mesh_bytes = mesh.serialize(fmt='ngmesh')
@@ -179,7 +181,7 @@ def _generate_and_store_mesh():
 
 
 def generate_small_mesh(dvid, uuid, segmentation, body, scale=5, supervoxels=False,
-                        smoothing=3, decimation=0.01, max_vertices=200e3, processes=4,
+                        smoothing=3, decimation=0.01, max_vertices=200e3,
                         dvid_session=None):
     if supervoxels:
         log_prefix = f"SV {body}"
@@ -245,10 +247,8 @@ def generate_small_mesh(dvid, uuid, segmentation, body, scale=5, supervoxels=Fal
         # can reduce the decimation as needed.
         decimation = min(1.0, decimation * 4**(scale + downsample_scale - 1))
 
-    with Timer(f"{log_prefix}: Constructing mesh blockwise", log_start=False):
-        mesh = mesh_from_binary_blocks(masks, block_boxes, stitch=False,
-                                       presmoothing=smoothing, predecimation=decimation,
-                                       processes=processes)
+    mesh = mesh_from_binary_blocks(log_prefix, masks, block_boxes, stitch=False,
+                                   presmoothing=smoothing, predecimation=decimation)
 
     decimation = min(1.0, max_vertices / len(mesh.vertices_zyx))
     if decimation < 1.0:
@@ -259,7 +259,7 @@ def generate_small_mesh(dvid, uuid, segmentation, body, scale=5, supervoxels=Fal
     return mesh, scale + downsample_scale
 
 
-def mesh_from_binary_blocks(downsampled_binary_blocks, fullres_boxes_zyx, stitch=True, presmoothing=0, predecimation=1.0, processes=4):
+def mesh_from_binary_blocks(log_prefix, downsampled_binary_blocks, fullres_boxes_zyx, stitch=True, presmoothing=0, predecimation=1.0):
     """
     Mesh.from_binary_blocks(), but adapted to use multiple processes.
     """
@@ -267,19 +267,85 @@ def mesh_from_binary_blocks(downsampled_binary_blocks, fullres_boxes_zyx, stitch
         msg = ("You're using stitch=True, but you're applying presmoothing or "
                "predecimation, so the block meshes won't stitch properly.")
         logger.warn(msg)
+
     num_blocks = getattr(fullres_boxes_zyx, '__len__', lambda: None)()
-    gen_mesh = partial(_gen_mesh, smoothing=presmoothing, decimation=predecimation)
-    meshes = compute_parallel(gen_mesh, zip(downsampled_binary_blocks, fullres_boxes_zyx), starmap=True, total=num_blocks, show_progress=False, processes=4)
+    if NGSUPPORT_PARALLELIZE_WITH_SERVICE:
+        threads = NGSUPPORT_PARALLELIZE_WITH_SERVICE
+        processes = 0
+        msg = f"{log_prefix}: Computing {num_blocks} block meshes via {threads} service workers"
+        gen_mesh = partial(_request_block_mesh, presmoothing=presmoothing, predecimation=predecimation)
+    else:
+        threads = 0
+        processes = NGSUPPORT_PROCESS_POOL
+        msg = f"{log_prefix}: Computing {num_blocks} block meshes via {processes} local processes"
+        gen_mesh = partial(_gen_block_mesh, presmoothing=presmoothing, predecimation=predecimation)
+
+    with Timer(msg, log_start=False):
+        meshes = compute_parallel(gen_mesh, zip(downsampled_binary_blocks, fullres_boxes_zyx), starmap=True,
+                                  total=num_blocks, show_progress=False,
+                                  threads=threads, processes=processes)
+
     mesh = Mesh.concatenate_meshes(meshes)
     if stitch:
         mesh.stitch_adjacent_faces()
     return mesh
 
 
-def _gen_mesh(binary_block, fullres_box, smoothing, decimation):
-    m = Mesh.from_binary_vol(binary_block, fullres_box, method='ilastik', smoothing_rounds=smoothing)
-    m.simplify(decimation)
+def _gen_block_mesh(binary_block, fullres_box, presmoothing, predecimation):
+    m = Mesh.from_binary_vol(binary_block, fullres_box, method='ilastik', smoothing_rounds=presmoothing)
+    m.simplify(predecimation)
     return m
+
+
+def _request_block_mesh(binary_block, fullres_box_zyx, presmoothing, predecimation):
+    """
+    Instead of running _gen_block_mesh() directly, request it from the service.
+    This allows us to parallelize the computation of the block meshes beyond
+    a single service instance, possibly achieving parallelism of 1000x or better.
+
+    HOWEVER, this comes with a special risk: Deadlock.
+    Since we're now making the outer (overall) request dependent on smaller requests
+    WHICH WILL RUN ON THIS SAME SERVICE, it is critical that the service hasn't
+    saturated all worker threads it has been provisioned with.  For that reason,
+    running this service on a local machine with limited threads is not recommended
+    without careful thought to the configuration.  Running with a highly-scaled
+    CloudRun configuration will work, but even there the particular configuration
+    (number of instances, number of workers per instance, etc.) is very important.
+
+    The above-mentioned concern could be largely alleviated if we switch to an async
+    implementation of our route handlers and the request in this function.
+    """
+    if not NGSUPPORT_SERVICE_BASE:
+        raise RuntimeError("NGSUPPORT_SERVICE_BASE is not defined")
+    url = f'{NGSUPPORT_SERVICE_BASE}/block-mesh'
+    params = {
+        'shape': '_'.join(map(str, binary_block.shape)),
+        'box0': '_'.join(map(str, fullres_box_zyx[0])),
+        'box1': '_'.join(map(str, fullres_box_zyx[1])),
+        'presmoothing': str(presmoothing),
+        'predecimation': str(predecimation)
+    }
+    payload = bytes(np.packbits(binary_block.view(bool)))
+    r = requests.post(url, params=params, data=payload)
+    r.raise_for_status()
+    return Mesh.from_buffer(r.content, fmt='ngmesh')
+
+
+def gen_block_mesh():
+    shape = [*map(int, request.args['shape'].split('_'))]
+    box0 = [*map(float, request.args['box0'].split('_'))]
+    box1 = [*map(float, request.args['box1'].split('_'))]
+    presmoothing = int(request.args['presmoothing'])
+    predecimation = float(request.args['predecimation'])
+
+    packed_bits = np.frombuffer(request.data, dtype=np.uint8)
+    binary_block = np.unpackbits(packed_bits).reshape(shape).view(np.uint8)
+    m = _gen_block_mesh(binary_block, [box0, box1], presmoothing, predecimation)
+
+    mesh_bytes = m.serialize(fmt='ngmesh')
+    r = make_response(mesh_bytes)
+    r.headers.set('Content-Type', 'application/octet-stream')
+    return r
 
 
 def store_mesh(dvid, uuid, mesh_kv, mesh_bytes, body, scale, supervoxels, dvid_session):

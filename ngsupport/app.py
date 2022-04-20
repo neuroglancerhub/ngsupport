@@ -11,7 +11,7 @@ from neuclease import configure_default_logging
 configure_default_logging()
 logger = logging.getLogger(__name__)
 
-from .small_mesh import generate_and_store_mesh
+from .small_mesh import generate_and_store_mesh, gen_block_mesh
 from .locate_body import locate_body
 
 app = Flask(__name__)
@@ -23,6 +23,10 @@ CORS(app, origins=r'.*\.janelia\.org', supports_credentials=True)
 @app.route('/small-mesh')
 def _small_mesh():
     return generate_and_store_mesh()
+
+@app.route('/block-mesh', methods=['POST'])
+def _block_mesh():
+    return gen_block_mesh()
 
 @app.route('/locate-body')
 def _locate_body():
