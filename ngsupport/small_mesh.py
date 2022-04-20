@@ -1,6 +1,7 @@
 import os
 import copy
 import logging
+import subprocess
 from functools import partial
 
 import numpy as np
@@ -276,7 +277,13 @@ def generate_small_mesh(dvid, uuid, segmentation, body, scale=5, supervoxels=Fal
     if postdecimation < 0.9:
         logger.info(f"{log_prefix}: Computed mesh has too many vertices ({len(mesh.vertices_zyx):.2e} > {max_vertices:.2e})")
         with Timer(f"{log_prefix}: Applying additional decimation to mesh with fraction {postdecimation:.3f}", log_start=False):
-            mesh.simplify(postdecimation)
+            try:
+                mesh.simplify(postdecimation)
+            except subprocess.CalledProcessError as ex:
+                # Sometimes the simplification fails for harmless reasons
+                # (e.g. it can't find a way to achieve 0.999 decimation)
+                logger.warn(f"Could not simplify mesh ({len(mesh.vertices_zyx)}) with decimation {predecimation}")
+                logger.warn(f"{ex}")
 
     logger.info(f"{log_prefix}: Final mesh has {len(mesh.vertices_zyx):.2e} vertices")
     return mesh, scale + downsample_scale
@@ -319,7 +326,13 @@ def mesh_from_binary_blocks(log_prefix, downsampled_binary_blocks, fullres_boxes
 
 def _gen_block_mesh(binary_block, fullres_box, presmoothing, predecimation, size_only=False):
     m = Mesh.from_binary_vol(binary_block, fullres_box, method='ilastik', smoothing_rounds=presmoothing)
-    m.simplify(predecimation)
+    try:
+        m.simplify(predecimation)
+    except subprocess.CalledProcessError as ex:
+        # Sometimes the simplification fails for harmless reasons
+        # (e.g. it can't find a way to achieve 0.999 decimation)
+        logger.warn(f"Could not simplify mesh ({len(m.vertices_zyx)}) with decimation {predecimation}")
+        logger.warn(f"{ex}")
     if size_only:
         return len(m.vertices_zyx)
     return m
