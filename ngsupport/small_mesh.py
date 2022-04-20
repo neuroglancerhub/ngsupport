@@ -5,7 +5,7 @@ from functools import partial
 
 import numpy as np
 
-from flask import Response, request, make_response
+from flask import Response, request, make_response, jsonify
 import requests
 from requests import RequestException, HTTPError
 
@@ -191,6 +191,15 @@ def generate_small_mesh(dvid, uuid, segmentation, body, scale=5, supervoxels=Fal
     with Timer(f"{log_prefix}: Fetching coarse sparsevol", logger, log_start=False):
         svc_ranges = fetch_sparsevol_coarse(dvid, uuid, segmentation, body, supervoxels=supervoxels, format='ranges', session=dvid_session)
 
+    # Do a test mesh on the coarse sparsevol
+    logger.info(f"{log_prefix}: Estimating vertex count via coarse scale-6 mesh blocks")
+    block_boxes, masks = blockwise_masks_from_ranges(svc_ranges, (64, 64, 64), halo=2)
+    block_boxes = block_boxes * VOXEL_NM * (2**6)
+    vertices_s6 = mesh_from_binary_blocks(log_prefix, masks, block_boxes, stitch=False,
+                                          presmoothing=0, predecimation=1.0,
+                                          size_only=True)
+    logger.info(f"{log_prefix}: Coarse scale-6 blocks contain {vertices_s6:.2e} vertices")
+
     if scale is not None:
         try:
             rng = fetch_sparsevol(dvid, uuid, segmentation, body, scale=scale, supervoxels=supervoxels, format='ranges')
@@ -235,31 +244,45 @@ def generate_small_mesh(dvid, uuid, segmentation, body, scale=5, supervoxels=Fal
 
     downsample_scale = 0
     while len(block_boxes) > 200 and scale != 6:
+        # Too many blocks.  Find a better scale.
+        # Reduce scale with continuity-preserving downsampling.
         downsample_scale += 1
-        # Too many blocks. Reduce scale with continuity-preserving downsampling
-        block_boxes, masks = blockwise_masks_from_ranges(rng, 64 * (2**downsample_scale), halo=4)
+        factor = (2**downsample_scale)
+        block_boxes, masks = blockwise_masks_from_ranges(rng, 64 * factor, halo=2*factor)
         block_boxes = block_boxes * VOXEL_NM * (2**scale)
         logger.info(f"{log_prefix}: Downsampling further to scale-{scale+downsample_scale} ({len(block_boxes)} blocks)")
-        masks = map(partial(downsample_mask, factor=2), masks)
+        masks = map(partial(downsample_mask, factor=factor), masks)
 
+    predecimation = decimation
     if scale + downsample_scale > 1:
         # If we chose a low-res scale, then we
         # can reduce the decimation as needed.
-        decimation = min(1.0, decimation * 4**(scale + downsample_scale - 1))
+        predecimation = min(1.0, decimation * 4**(scale + downsample_scale - 1))
+        logger.info(f"{log_prefix}: Requested decimation (after adjusting for scale) is {predecimation}")
+
+    # Further enhance the decimation if we think the vertex count will be too high with the default decimation.
+    # We estimate the full vertex count by multiplying the scale-6 vertex count.
+    estimated_full_vertices = vertices_s6 * 4**(6 - (scale + downsample_scale))
+    estimated_decimated_vertices = predecimation * estimated_full_vertices
+    logger.info(f"{log_prefix}: Estimated final vertex count is {estimated_decimated_vertices:.2e}.")
+    if estimated_decimated_vertices > max_vertices:
+        predecimation = max_vertices/estimated_full_vertices
+        logger.info(f"{log_prefix}: Enhancing decimation to {predecimation:.5f} to fit within vertex budget ({max_vertices:.2e})")
 
     mesh = mesh_from_binary_blocks(log_prefix, masks, block_boxes, stitch=False,
-                                   presmoothing=smoothing, predecimation=decimation)
+                                   presmoothing=smoothing, predecimation=predecimation)
 
-    decimation = min(1.0, max_vertices / len(mesh.vertices_zyx))
-    if decimation < 1.0:
-        logger.info(f"{log_prefix}: Default mesh has too many vertices ({len(mesh.vertices_zyx):.2e} > {max_vertices:.2e})")
-        with Timer(f"{log_prefix}: Applying additional decimation to mesh with fraction {decimation:.3f}", log_start=False):
-            mesh.simplify(decimation)
+    postdecimation = min(1.0, max_vertices / len(mesh.vertices_zyx))
+    if postdecimation < 0.9:
+        logger.info(f"{log_prefix}: Computed mesh has too many vertices ({len(mesh.vertices_zyx):.2e} > {max_vertices:.2e})")
+        with Timer(f"{log_prefix}: Applying additional decimation to mesh with fraction {postdecimation:.3f}", log_start=False):
+            mesh.simplify(postdecimation)
 
+    logger.info(f"{log_prefix}: Final mesh has {len(mesh.vertices_zyx):.2e} vertices")
     return mesh, scale + downsample_scale
 
 
-def mesh_from_binary_blocks(log_prefix, downsampled_binary_blocks, fullres_boxes_zyx, stitch=True, presmoothing=0, predecimation=1.0):
+def mesh_from_binary_blocks(log_prefix, downsampled_binary_blocks, fullres_boxes_zyx, stitch=True, presmoothing=0, predecimation=1.0, size_only=False):
     """
     Mesh.from_binary_blocks(), but adapted to use multiple processes.
     """
@@ -273,31 +296,36 @@ def mesh_from_binary_blocks(log_prefix, downsampled_binary_blocks, fullres_boxes
         threads = NGSUPPORT_PARALLELIZE_WITH_SERVICE
         processes = 0
         msg = f"{log_prefix}: Computing {num_blocks} block meshes via {threads} service workers"
-        gen_mesh = partial(_request_block_mesh, presmoothing=presmoothing, predecimation=predecimation)
+        gen_mesh = partial(_request_block_mesh, presmoothing=presmoothing, predecimation=predecimation, size_only=size_only)
     else:
         threads = 0
         processes = NGSUPPORT_PROCESS_POOL
         msg = f"{log_prefix}: Computing {num_blocks} block meshes via {processes} local processes"
-        gen_mesh = partial(_gen_block_mesh, presmoothing=presmoothing, predecimation=predecimation)
+        gen_mesh = partial(_gen_block_mesh, presmoothing=presmoothing, predecimation=predecimation, size_only=size_only)
 
     with Timer(msg, log_start=False):
-        meshes = compute_parallel(gen_mesh, zip(downsampled_binary_blocks, fullres_boxes_zyx), starmap=True,
-                                  total=num_blocks, show_progress=False,
-                                  threads=threads, processes=processes)
+        results = compute_parallel(gen_mesh, zip(downsampled_binary_blocks, fullres_boxes_zyx), starmap=True,
+                                   total=num_blocks, show_progress=False,
+                                   threads=threads, processes=processes)
 
-    mesh = Mesh.concatenate_meshes(meshes)
+    if size_only:
+        return sum(results)
+
+    mesh = Mesh.concatenate_meshes(results)
     if stitch:
         mesh.stitch_adjacent_faces()
     return mesh
 
 
-def _gen_block_mesh(binary_block, fullres_box, presmoothing, predecimation):
+def _gen_block_mesh(binary_block, fullres_box, presmoothing, predecimation, size_only=False):
     m = Mesh.from_binary_vol(binary_block, fullres_box, method='ilastik', smoothing_rounds=presmoothing)
     m.simplify(predecimation)
+    if size_only:
+        return len(m.vertices_zyx)
     return m
 
 
-def _request_block_mesh(binary_block, fullres_box_zyx, presmoothing, predecimation):
+def _request_block_mesh(binary_block, fullres_box_zyx, presmoothing, predecimation, size_only=False):
     """
     Instead of running _gen_block_mesh() directly, request it from the service.
     This allows us to parallelize the computation of the block meshes beyond
@@ -323,11 +351,16 @@ def _request_block_mesh(binary_block, fullres_box_zyx, presmoothing, predecimati
         'box0': '_'.join(map(str, fullres_box_zyx[0])),
         'box1': '_'.join(map(str, fullres_box_zyx[1])),
         'presmoothing': str(presmoothing),
-        'predecimation': str(predecimation)
+        'predecimation': str(predecimation),
+        'size_only': str(size_only)
     }
     payload = bytes(np.packbits(binary_block.view(bool)))
     r = requests.post(url, params=params, data=payload)
     r.raise_for_status()
+
+    if size_only:
+        return r.json()[0]
+
     return Mesh.from_buffer(r.content, fmt='ngmesh')
 
 
@@ -337,10 +370,15 @@ def gen_block_mesh():
     box1 = [*map(float, request.args['box1'].split('_'))]
     presmoothing = int(request.args['presmoothing'])
     predecimation = float(request.args['predecimation'])
+    size_only = request.args.get('size_only', 'False') == 'True'
 
     packed_bits = np.frombuffer(request.data, dtype=np.uint8)
     binary_block = np.unpackbits(packed_bits).reshape(shape).view(np.uint8)
     m = _gen_block_mesh(binary_block, [box0, box1], presmoothing, predecimation)
+
+    if size_only:
+        r = jsonify([len(m.vertices_zyx)])
+        return r
 
     mesh_bytes = m.serialize(fmt='ngmesh')
     r = make_response(mesh_bytes)
