@@ -184,6 +184,9 @@ def _generate_and_store_mesh():
 def generate_small_mesh(dvid, uuid, segmentation, body, scale=5, supervoxels=False,
                         smoothing=3, decimation=0.01, max_vertices=200e3,
                         dvid_session=None):
+    """
+    This function needs a refactor.
+    """
     if supervoxels:
         log_prefix = f"SV {body}"
     else:
@@ -194,7 +197,7 @@ def generate_small_mesh(dvid, uuid, segmentation, body, scale=5, supervoxels=Fal
 
     # Do a test mesh on the coarse sparsevol
     logger.info(f"{log_prefix}: Estimating vertex count via coarse scale-6 mesh blocks")
-    block_boxes, masks = blockwise_masks_from_ranges(svc_ranges, (64, 64, 64), halo=2)
+    block_boxes, masks = blockwise_masks_from_ranges(svc_ranges, (64, 64, 64), halo=4)
     block_boxes = block_boxes * VOXEL_NM * (2**6)
     vertices_s6 = mesh_from_binary_blocks(log_prefix, masks, block_boxes, stitch=False,
                                           presmoothing=0, predecimation=1.0,
@@ -212,19 +215,19 @@ def generate_small_mesh(dvid, uuid, segmentation, body, scale=5, supervoxels=Fal
         block_boxes = block_boxes * VOXEL_NM * (2**scale)
 
     else:
-        # Pick a scale -- aim for 100 blocks
+        # Pick a scale -- aim for 50 blocks
         s0_blocks = (svc_ranges[:, 3] - svc_ranges[:, 2] + 1).sum()
-        block_boxes, masks = blockwise_masks_from_ranges(svc_ranges, (64,64,64))
+        block_boxes, masks = blockwise_masks_from_ranges(svc_ranges, (64,64,64), halo=4)
         block_boxes = block_boxes * VOXEL_NM * (2**6)
 
         logger.info(f"{log_prefix}: Coarse sparsevol covers {s0_blocks} blocks at scale-0, {len(block_boxes)} blocks at scale-6")
-        if len(block_boxes) > 100:
+        if len(block_boxes) > 50:
             logger.info(f"{log_prefix}: Using coarse sparsevol (scale-6)")
             rng = svc_ranges
             scale = 6
         else:
-            # Try scales from 3 to scale 1
-            for scale in range(3, 0, -1):
+            # Start with fairly high-res (scale 3) and downsample below if necessary.
+            for scale in [3, 2]:
                 with Timer(f"{log_prefix}: Fetching scale-{scale} sparsevol", logger, log_start=False):
                     try:
                         rng = fetch_sparsevol(dvid, uuid, segmentation, body, scale=scale, supervoxels=supervoxels, format='ranges')
@@ -244,7 +247,7 @@ def generate_small_mesh(dvid, uuid, segmentation, body, scale=5, supervoxels=Fal
     logger.info(f"{log_prefix}: Selected scale-{scale} ({len(block_boxes)} blocks)")
 
     downsample_scale = 0
-    while len(block_boxes) > 200 and scale != 6:
+    while len(block_boxes) > 100 and scale != 6:
         # Too many blocks.  Find a better scale.
         # Reduce scale with continuity-preserving downsampling.
         downsample_scale += 1
@@ -318,9 +321,11 @@ def mesh_from_binary_blocks(log_prefix, downsampled_binary_blocks, fullres_boxes
     if size_only:
         return sum(results)
 
-    mesh = Mesh.concatenate_meshes(results)
-    if stitch:
-        mesh.stitch_adjacent_faces()
+    with Timer(f"{log_prefix}: Combining {num_blocks} block meshes"):
+        mesh = Mesh.concatenate_meshes(results)
+        if stitch:
+            mesh.stitch_adjacent_faces()
+
     return mesh
 
 
@@ -335,6 +340,8 @@ def _gen_block_mesh(binary_block, fullres_box, presmoothing, predecimation, size
         logger.warn(f"{ex}")
     if size_only:
         return len(m.vertices_zyx)
+
+    m.drop_normals()
     return m
 
 
