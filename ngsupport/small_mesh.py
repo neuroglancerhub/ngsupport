@@ -34,7 +34,16 @@ MAX_SCALE = 7
 #       want that one?
 
 NGSUPPORT_SERVICE_BASE = os.environ.get('NGSUPPORT_SERVICE_BASE', 'https://ngsupport-bmcp5imp6q-uk.a.run.app')
-NGSUPPORT_PARALLELIZE_WITH_SERVICE = int(os.environ.get('NGSUPPORT_PARALLELIZE_WITH_SERVICE', 0))
+
+# Same code as above, but deployed separately to serve as a worker.
+NGSUPPORT_SERVICE_WORKER_BASE = os.environ.get('NGSUPPORT_SERVICE_WORKER_BASE', 'https://ngsupport-worker-bmcp5imp6q-uk.a.run.app')
+
+# If non-zero, we'll parallelize block mesh computations using ngsupport-worker on CloudRun,
+# with this many parallel requests (per body mesh).
+NGSUPPORT_WORKER_PARALLELISM = int(os.environ.get('NGSUPPORT_WORKER_PARALLELISM', 0))
+
+# If we aren't parallelizing block mesh computations with CloudRun,
+# then we'll use a local process pool with this many processes.
 NGSUPPORT_PROCESS_POOL = int(os.environ.get('NGSUPPORT_PROCESS_POOL', 4))
 
 
@@ -302,8 +311,8 @@ def mesh_from_binary_blocks(log_prefix, downsampled_binary_blocks, fullres_boxes
         logger.warn(msg)
 
     num_blocks = getattr(fullres_boxes_zyx, '__len__', lambda: None)()
-    if NGSUPPORT_PARALLELIZE_WITH_SERVICE:
-        threads = NGSUPPORT_PARALLELIZE_WITH_SERVICE
+    if NGSUPPORT_WORKER_PARALLELISM:
+        threads = NGSUPPORT_WORKER_PARALLELISM
         processes = 0
         msg = f"{log_prefix}: Computing {num_blocks} block meshes via {threads} service workers"
         gen_mesh = partial(_request_block_mesh, presmoothing=presmoothing, predecimation=predecimation, size_only=size_only)
@@ -363,9 +372,9 @@ def _request_block_mesh(binary_block, fullres_box_zyx, presmoothing, predecimati
     The above-mentioned concern could be largely alleviated if we switch to an async
     implementation of our route handlers and the request in this function.
     """
-    if not NGSUPPORT_SERVICE_BASE:
-        raise RuntimeError("NGSUPPORT_SERVICE_BASE is not defined")
-    url = f'{NGSUPPORT_SERVICE_BASE}/block-mesh'
+    if not NGSUPPORT_SERVICE_WORKER_BASE:
+        raise RuntimeError("NGSUPPORT_SERVICE_WORKER_BASE is not defined")
+    url = f'{NGSUPPORT_SERVICE_WORKER_BASE}/block-mesh'
     params = {
         'shape': '_'.join(map(str, binary_block.shape)),
         'box0': '_'.join(map(str, fullres_box_zyx[0])),
