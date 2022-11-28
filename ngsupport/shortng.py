@@ -39,6 +39,9 @@ def shortng():
 
 
 def _shortng():
+    from_slack = 'Slackbot' in request.headers.get('User-Agent')
+    logger.info(f"Request from Slack: {from_slack}")
+
     if 'text' in request.form:
         # https://api.slack.com/interactivity/slash-commands#app_command_handling
         data = request.form['text'].strip()
@@ -46,12 +49,17 @@ def _shortng():
         # For simple testing.
         data = request.data.decode('utf-8').strip()
 
+    data = data.replace('`', '')
+
     logger.info(data)
     name_and_link = data.split(' ')
     if len(name_and_link) == 0:
-        msg = "No link provided"
+        msg = "Error: No link provided"
         logger.error(msg)
-        return Response(msg, 400)
+        if from_slack:
+            return Response(msg, 200)
+        else:
+            return Response(msg, 400)
 
     if len(name_and_link) == 1 or name_and_link[0] == '{':
         filename = datetime.datetime.now().strftime('%Y-%m-%d.%H%M%S')
@@ -75,7 +83,10 @@ def _shortng():
     if not (url_base.startswith('http://') or url_base.startswith('https://')):
         msg = "Filename must not contain spaces, and links must start with http or https"
         logger.error(msg)
-        return Response(msg, 400)
+        if from_slack:
+            return Response(msg, 200)
+        else:
+            return Response(msg, 400)
 
     # HACK:
     # I store the *contents* of the credentials in the environment
