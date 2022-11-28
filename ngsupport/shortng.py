@@ -31,15 +31,22 @@ def upload_to_bucket(blob_name, blob_contents, bucket_name):
 
 
 def shortng():
-    logger.info(request.data.decode('utf-8'))
-    parsed = urllib.parse.parse_qs(request.data.decode('utf-8'))
-    if parsed:
+    try:
+        return _shortng()
+    except Exception as ex:
+        logger.error(ex)
+        raise
+
+
+def _shortng():
+    if 'text' in request.form:
         # https://api.slack.com/interactivity/slash-commands#app_command_handling
-        data = parsed['text'][0]
+        data = request.form['text'].strip()
     else:
         # For simple testing.
         data = request.data.decode('utf-8').strip()
 
+    logger.info(data)
     name_and_link = data.split(' ')
     if len(name_and_link) == 0:
         msg = "No link provided"
@@ -81,7 +88,8 @@ def shortng():
     os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = creds_path
 
     state_string = json.dumps(state, indent=2)
-
     upload_to_bucket(f'short/{filename}', state_string, SHORTNG_BUCKET)
 
-    return Response(f'{url_base}#!gs://{SHORTNG_BUCKET}/short/{filename}', 200)
+    url = f'{url_base}#!gs://{SHORTNG_BUCKET}/short/{filename}'
+    logger.info(f"Completed {url}")
+    return Response(url, 200)
