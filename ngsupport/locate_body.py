@@ -65,7 +65,7 @@ def locate_body():
     try:
         supervoxels = {'true': True, 'false': False}[supervoxels]
     except KeyError:
-        return Response(f"Invalid argument for 'supervoxels' parameter: '{supervoxels}'")
+        return Response(f"Invalid argument for 'supervoxels' parameter: '{supervoxels}'", 400)
 
     user = request.args.get('u') or request.args.get('user', "UNKNOWN")
 
