@@ -28,7 +28,14 @@ def upload_to_bucket(blob_name, blob_contents, bucket_name):
 
 
 def shortng():
-    data = request.data.decode('utf-8').strip()
+    parsed = urllib.parse.parse_qs(request.data.decode('utf-8'))
+    if parsed:
+        # https://api.slack.com/interactivity/slash-commands#app_command_handling
+        data = parsed['text'][0]
+    else:
+        # For simple testing.
+        data = request.data.decode('utf-8').strip()
+
     name_and_link = data.split(' ')
     if len(name_and_link) == 0:
         return Response("No link provided", 400)
