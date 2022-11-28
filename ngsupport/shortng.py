@@ -1,4 +1,5 @@
 import os
+import logging
 import datetime
 import tempfile
 import json
@@ -6,6 +7,8 @@ import urllib
 
 from google.cloud import storage
 from flask import Response, request
+
+logger = logging.getLogger(__name__)
 
 
 SHORTNG_BUCKET = 'flyem-user-links'  # Owned by FlyEM-Private
@@ -28,6 +31,7 @@ def upload_to_bucket(blob_name, blob_contents, bucket_name):
 
 
 def shortng():
+    logger.info(request.data.decode('utf-8'))
     parsed = urllib.parse.parse_qs(request.data.decode('utf-8'))
     if parsed:
         # https://api.slack.com/interactivity/slash-commands#app_command_handling
@@ -38,7 +42,9 @@ def shortng():
 
     name_and_link = data.split(' ')
     if len(name_and_link) == 0:
-        return Response("No link provided", 400)
+        msg = "No link provided"
+        logger.error(msg)
+        return Response(msg, 400)
 
     if len(name_and_link) == 1 or name_and_link[0] == '{':
         filename = datetime.datetime.now().strftime('%Y-%m-%d.%H%M%S')
@@ -60,7 +66,9 @@ def shortng():
             return Response(f"Could not parse link:\n\n{link}", 400)
 
     if not (url_base.startswith('http://') or url_base.startswith('https://')):
-        return Response(f"Filename must not contain spaces, and links must start with http or https", 400)
+        msg = "Filename must not contain spaces, and links must start with http or https"
+        logger.error(msg)
+        return Response(msg, 400)
 
     # HACK:
     # I store the *contents* of the credentials in the environment
