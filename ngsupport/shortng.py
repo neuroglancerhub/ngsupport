@@ -56,6 +56,12 @@ def _shortng():
 
     data = data.replace('`', '')
 
+    if data == "" and from_slack:
+        return Response(
+            "No link provided.  Try again or try the web page:\n"
+            "https://shortng-bmcp5imp6q-uc.a.run.app/shortener.html",
+            200)
+
     logger.info(data)
     name_and_link = data.split(' ')
     if len(name_and_link) == 0:
