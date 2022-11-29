@@ -198,7 +198,8 @@ def _web_response(url, bucket_path):
     """
     download_url = f"https://storage.googleapis.com/{bucket_path}"
 
-    script = dedent("""
+    script = dedent("""\
+        <script type="text/javascript">
         function copy_to_clipboard(text) {
             try {
                 navigator.clipboard.writeText(text);
@@ -207,29 +208,33 @@ def _web_response(url, bucket_path):
                 console.error("Couldn't write to clipboard:", err)
             }
         }
-        """)
+        </script>""")
 
-    page = dedent(f"""\
+    style = dedent("""\
+        <style>
+            *{font-family: Verdana;}
+            a {
+                text-decoration: none
+            }
+        </style>""")
+
+    page = dedent("""\
+        <!doctype html>
         <html>
         <head>
         <title>Shortened link</title>
-        <script type="text/javascript">
+        {style}
         {script}
-        </script>
         </head>
         <body>
-        <h2>
+        <h3>
             <a href={url}>{url}</a>
-            <a href="" onclick="copy_to_clipboard('{url}'); return false;">
-                <img src=static/copy.jpg width=30 height=30>
-            </a>
-        </h2>
+        </h3>
         <h4>
             <a href="" onclick="copy_to_clipboard('{url}'); return false;">[copy link]</a>
             <a href={download_url}>[view json]</a>
             <a href=shortener.html>[start over]</a>
         </h4>
         </body>
-        </html>
-        """)
-    return Response(page, 200)
+        </html>""").format(**locals())
+    return Response(page, 200, mimetype='text/html')

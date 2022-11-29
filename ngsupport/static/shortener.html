@@ -2,6 +2,15 @@
 <html>
     <head>
         <title>link shortener for neuroglancer state</title>
+        <style>
+            *{font-family: Verdana;}
+            label {
+                line-height: 2.0;
+            }
+            code {
+                font-family: 'Courier New', Courier, monospace
+            }
+        </style>
     </head>
     <body>
         <h2>link shortener for neuroglancer state</h2>
@@ -16,8 +25,13 @@
 
             <label for="text">link:</label>
             <input type="text" id="text" name="text" value="" size="100", title="Paste the entire neuroglancer link exactly as it appears in your browser URL bar."><br>
-
+            <br>
             <input type="submit" value="store link state">
         </form>
+        <br>
+        <br>
+        <hr>
+        Tip: In the FlyEM Slack workspace, this link shortener is available via<br>
+        the <code>/shortng</code> Slack command, albeit subject to Slack's limits on message size.
     </body>
 </html>
