@@ -7,7 +7,7 @@ import urllib
 from textwrap import dedent
 
 from google.cloud import storage
-from flask import Response, request, url_for, current_app
+from flask import Response, request, current_app
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,9 @@ def shortng():
 
 
 def _shortng():
+    """
+
+    """
     from_slack = ('Slackbot' in request.headers.get('User-Agent'))
     logger.info(f"from_slack: {from_slack}")
 
@@ -56,9 +59,14 @@ def _shortng():
 
     data = data.replace('`', '')
 
+    title = request.form.get('title', None)
+
     if data == "" and from_slack:
         return Response(
-            "No link provided.  Try again or try the web page:\n"
+            "No link provided. Use one of the following formats:\n"
+            "```/shortng my-filename https://clio-ng.janelia.org/...```\n\n"
+            "```/shortng https://clio-ng.janelia.org/...```\n\n"
+            "Alternatively, try the web interface:\n"
             "https://shortng-bmcp5imp6q-uc.a.run.app/shortener.html",
             200)
 
@@ -83,6 +91,10 @@ def _shortng():
     if not filename.endswith('.json'):
         filename += '.json'
 
+    # We don't even handle spaces via the slack UI, but spaces
+    # might be present if the user used the web UI.  Replace them.
+    filename = filename.replace(' ', '_')
+
     try:
         state = json.loads(link)
         url_base = 'https://clio-ng.janelia.org'
@@ -91,6 +103,9 @@ def _shortng():
             url_base, state = parse_nglink(link.strip())
         except ValueError:
             return Response(f"Could not parse link:\n\n{link}", 400)
+
+    if title:
+        state['title'] = title
 
     if not (url_base.startswith('http://') or url_base.startswith('https://')):
         msg = "Error: Filename must not contain spaces, and links must start with http or https"
@@ -119,6 +134,8 @@ def _shortng():
     if not from_web:
         return Response(url, 200)
 
+    download_url = f"https://storage.googleapis.com/{SHORTNG_BUCKET}/short/{filename}"
+
     script = dedent("""
         function copy_to_clipboard(text) {
             try {
@@ -145,7 +162,7 @@ def _shortng():
                 <img src=static/copy.jpg width=30 height=30>
             </a>
         </h2>
-        <h3><a href=shortener.html>[Start Over]</a></h3>
+        <h4><a href="" onclick="copy_to_clipboard('{url}'); return false;">[copy link]</a> <a href={download_url}>[view json]</a> <a href=shortener.html>[start over]</a><h4>
         </body>
         </html>
         """)

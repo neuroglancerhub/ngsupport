@@ -9,11 +9,13 @@
             <input type="hidden" id="client" name="client" value="web">
 
             <label for="filename">filename (optional):</label>
-            <input type="text" id="filename" name="filename" value=""><br>
+            <input type="text" id="filename" name="filename" value="", title="Name of the filename to store.  Slashes permitted, e.g. mylinks/link-1"><br>
+
+            <label for="title">title (optional, appears in tab name):</label>
+            <input type="text" id="title" name="title" value="" title="Overwrites the neuroglancer state title, setting the tab name."><br>
 
             <label for="text">link:</label>
-            <input type="text" id="text" name="text" value="" size="100"><br>
-            <!-- <textarea name="text" rows="10" cols="100"></textarea><br> -->
+            <input type="text" id="text" name="text" value="" size="100", title="Paste the entire neuroglancer link exactly as it appears in your browser URL bar."><br>
 
             <input type="submit" value="Shorten">
         </form>
