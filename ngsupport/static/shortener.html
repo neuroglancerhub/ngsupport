@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+    <head>
+        <title>neuroglancer link storage/shortener</title>
+    </head>
+    <body>
+        <h2>neuroglancer link shortener</h2>
+        <form action="/shortng" method="post">
+            <input type="hidden" id="client" name="client" value="web">
+
+            <label for="filename">filename (optional):</label>
+            <input type="text" id="filename" name="filename" value=""><br>
+
+            <label for="text">link:</label>
+            <input type="text" id="text" name="text" value="" size="100"><br>
+            <!-- <textarea name="text" rows="10" cols="100"></textarea><br> -->
+
+            <input type="submit" value="Shorten">
+        </form>
+    </body>
+</html>

@@ -53,3 +53,13 @@ def _locate_body():
 def _shortng():
     from ngsupport.shortng import shortng
     return shortng()
+
+@app.route('/shortener.html')
+def _shortener():
+    from ngsupport.shortng import shortener
+    return shortener()
+
+
+if __name__ == "__main__":
+    print("Debug launch on http://0.0.0.0:8000")
+    app.run(host='0.0.0.0', port=8000, debug=True)

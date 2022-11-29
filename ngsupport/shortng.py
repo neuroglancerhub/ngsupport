@@ -4,9 +4,10 @@ import datetime
 import tempfile
 import json
 import urllib
+from textwrap import dedent
 
 from google.cloud import storage
-from flask import Response, request
+from flask import Response, request, url_for, current_app
 
 logger = logging.getLogger(__name__)
 
@@ -39,8 +40,11 @@ def shortng():
 
 
 def _shortng():
-    from_slack = 'Slackbot' in request.headers.get('User-Agent')
-    logger.info(f"Request from Slack: {from_slack}")
+    from_slack = ('Slackbot' in request.headers.get('User-Agent'))
+    logger.info(f"from_slack: {from_slack}")
+
+    from_web = (request.form.get('client') == 'web')
+    logger.info(f"from_web: {from_web}")
 
     if 'text' in request.form:
         # https://api.slack.com/interactivity/slash-commands#app_command_handling
@@ -62,7 +66,8 @@ def _shortng():
             return Response(msg, 400)
 
     if len(name_and_link) == 1 or name_and_link[0] == '{':
-        filename = datetime.datetime.now().strftime('%Y-%m-%d.%H%M%S')
+        filename = request.form.get('filename', None)
+        filename = filename or datetime.datetime.now().strftime('%Y-%m-%d.%H%M%S')
         link = data
     else:
         filename = name_and_link[0]
@@ -81,7 +86,7 @@ def _shortng():
             return Response(f"Could not parse link:\n\n{link}", 400)
 
     if not (url_base.startswith('http://') or url_base.startswith('https://')):
-        msg = "Filename must not contain spaces, and links must start with http or https"
+        msg = "Error: Filename must not contain spaces, and links must start with http or https"
         logger.error(msg)
         if from_slack:
             return Response(msg, 200)
@@ -103,4 +108,42 @@ def _shortng():
 
     url = f'{url_base}#!gs://{SHORTNG_BUCKET}/short/{filename}'
     logger.info(f"Completed {url}")
-    return Response(url, 200)
+
+    if not from_web:
+        return Response(url, 200)
+
+    script = dedent("""
+        function copy_to_clipboard(text) {
+            try {
+                navigator.clipboard.writeText(text);
+            }
+            catch (err) {
+                console.error("Couldn't write to clipboard:", err)
+            }
+        }
+        """)
+
+    page = dedent(f"""\
+        <html>
+        <head>
+        <title>Shortened link</title>
+        <script type="text/javascript">
+        {script}
+        </script>
+        </head>
+        <body>
+        <h2>
+            <a href={url}>{url}</a>
+            <a href="" onclick="copy_to_clipboard('{url}'); return false;">
+                <img src=static/copy.jpg width=30 height=30>
+            </a>
+        </h2>
+        <h3><a href=shortener.html>[Start Over]</a></h3>
+        </body>
+        </html>
+        """)
+    return Response(page, 200)
+
+
+def shortener():
+    return current_app.send_static_file('shortener.html')
