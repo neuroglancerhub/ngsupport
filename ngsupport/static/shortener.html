@@ -1,10 +1,10 @@
 <!doctype html>
 <html>
     <head>
-        <title>neuroglancer link storage/shortener</title>
+        <title>link shortener for neuroglancer state</title>
     </head>
     <body>
-        <h2>neuroglancer link shortener</h2>
+        <h2>link shortener for neuroglancer state</h2>
         <form action="/shortng" method="post">
             <input type="hidden" id="client" name="client" value="web">
 
@@ -17,7 +17,7 @@
             <label for="text">link:</label>
             <input type="text" id="text" name="text" value="" size="100", title="Paste the entire neuroglancer link exactly as it appears in your browser URL bar."><br>
 
-            <input type="submit" value="Shorten">
+            <input type="submit" value="store link state">
         </form>
     </body>
 </html>
