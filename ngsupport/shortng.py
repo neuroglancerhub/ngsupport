@@ -27,7 +27,8 @@ def upload_to_bucket(blob_name, blob_contents, bucket_name):
         os.environ['GOOGLE_APPLICATION_CREDENTIALS'])
     bucket = storage_client.get_bucket(bucket_name)
     blob = bucket.blob(blob_name)
-    blob.upload_from_string(blob_contents)
+    blob.cache_control = 'public, no-store'
+    blob.upload_from_string(blob_contents, content_type='application/json')
     return blob.public_url
 
 
