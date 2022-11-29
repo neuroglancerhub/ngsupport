@@ -7,7 +7,7 @@ import urllib
 from textwrap import dedent
 
 from google.cloud import storage
-from flask import Response, request, current_app
+from flask import Response, request, current_app, jsonify
 
 logger = logging.getLogger(__name__)
 
@@ -62,13 +62,13 @@ def _shortng():
     title = request.form.get('title', None)
 
     if data == "" and from_slack:
-        return Response(
+        msg = (
             "No link provided. Use one of the following formats:\n"
             "```/shortng my-filename https://clio-ng.janelia.org/...```\n\n"
             "```/shortng https://clio-ng.janelia.org/...```\n\n"
             "Alternatively, try the web interface:\n"
-            "https://shortng-bmcp5imp6q-uc.a.run.app/shortener.html",
-            200)
+            "https://shortng-bmcp5imp6q-uc.a.run.app/shortener.html")
+        return jsonify({"text": msg, "response_type": "ephemeral"})
 
     logger.info(data)
     name_and_link = data.split(' ')
@@ -76,7 +76,7 @@ def _shortng():
         msg = "Error: No link provided"
         logger.error(msg)
         if from_slack:
-            return Response(msg, 200)
+            return jsonify({"text": msg, "response_type": "ephemeral"})
         else:
             return Response(msg, 400)
 
@@ -102,7 +102,11 @@ def _shortng():
         try:
             url_base, state = parse_nglink(link.strip())
         except ValueError:
-            return Response(f"Could not parse link:\n\n{link}", 400)
+            msg = f"Could not parse link:\n\n{link}"
+            logger.error(msg)
+            if from_slack:
+                return jsonify({"text": msg, "response_type": "ephemeral"})
+            return Response(msg, 400)
 
     if title:
         state['title'] = title
@@ -111,7 +115,7 @@ def _shortng():
         msg = "Error: Filename must not contain spaces, and links must start with http or https"
         logger.error(msg)
         if from_slack:
-            return Response(msg, 200)
+            return jsonify({"text": msg, "response_type": "ephemeral"})
         else:
             return Response(msg, 400)
 
@@ -130,6 +134,9 @@ def _shortng():
 
     url = f'{url_base}#!gs://{SHORTNG_BUCKET}/short/{filename}'
     logger.info(f"Completed {url}")
+
+    if from_slack:
+        return jsonify({"text": url, "response_type": "ephemeral"})
 
     if not from_web:
         return Response(url, 200)
