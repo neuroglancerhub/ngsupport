@@ -59,6 +59,11 @@ def _shortener():
     from ngsupport.shortng import shortener
     return shortener()
 
+@app.route('/neuronjson_segment_properties/<server>/<uuid>/<instance>/<label>/<altlabel>/info')
+def _neuronjson_segment_properties_info():
+    from ngsupport.neuronjson_segment_properties import neuronjson_segment_properties_info
+    return neuronjson_segment_properties_info()
+
 
 if __name__ == "__main__":
     print("Debug launch on http://0.0.0.0:8000")
