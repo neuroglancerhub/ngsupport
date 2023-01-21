@@ -54,15 +54,24 @@ def _shortng():
     from ngsupport.shortng import shortng
     return shortng()
 
+
 @app.route('/shortener.html')
 def _shortener():
     from ngsupport.shortng import shortener
     return shortener()
 
+
+@app.route('/neuronjson_segment_properties/<server>/<uuid>/<instance>/<label>/info')
 @app.route('/neuronjson_segment_properties/<server>/<uuid>/<instance>/<label>/<altlabel>/info')
-def _neuronjson_segment_properties_info():
+def _neuronjson_segment_properties_info(server, uuid, instance, label, altlabel=None):
     from ngsupport.neuronjson_segment_properties import neuronjson_segment_properties_info
-    return neuronjson_segment_properties_info()
+    return neuronjson_segment_properties_info(server, uuid, instance, label, altlabel)
+
+
+@app.route('/neuronjson_segment_synapse_properties/<server>/<uuid>/<instance>/<int:n>/info')
+def _neuronjson_segment_synapse_properties_info(server, uuid, instance, n):
+    from ngsupport.neuronjson_segment_properties import neuronjson_segment_synapse_properties_info
+    return neuronjson_segment_synapse_properties_info(server, uuid, instance, n)
 
 
 if __name__ == "__main__":
