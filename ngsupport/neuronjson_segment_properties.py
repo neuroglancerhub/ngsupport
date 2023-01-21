@@ -12,6 +12,19 @@ logger = logging.getLogger(__name__)
 
 
 def neuronjson_segment_properties_info(server, uuid, instance, label, altlabel=None):
+    """
+    Respond to the segment properties /info endpoint:
+    /neuronjson_segment_synapse_properties/<server>/<uuid>/<instance>/<int:n>/info
+
+    If an 'altlabel' column is specified, it will be appended to the label in brackets,
+    e.g. "Mi1 [Anchor]"
+
+    - Fetches all annotation data from DVID
+    - selects the column(s) named in 'label' and (optionally) 'altlabel',
+    - discards segment IDs which are empty for the selected columns.
+    - combines label+altlabel into a single string for neuroglancer display,
+    - converts the results to the JSON format neuroglancer expects to see for segment properties.
+    """
     if not server.startswith('http'):
         server = f'https://{server}'
 
@@ -36,21 +49,25 @@ def neuronjson_segment_properties_info(server, uuid, instance, label, altlabel=N
         df.loc[valid_group, 'group'] = df.loc[valid_group, 'group'].astype(int).astype(str)
 
     df.loc[df[label] == "", label] = np.nan
-    if altlabel:
-        df.loc[df[altlabel] == "", altlabel] = np.nan
 
     if altlabel:
+        # Discard rows we don't care about
+        df.loc[df[altlabel] == "", altlabel] = np.nan
         valid_rows = ~df[label].isnull() | ~df[altlabel].isnull()
         df = df.loc[valid_rows, [label, altlabel]].fillna('').copy()
 
+        # Concatenate main and secondary columns into
+        # a single 'label' for neuroglancer to display.
         nonempty_alt = (df[altlabel] != "")
         df.loc[nonempty_alt, altlabel] = ' [' + df.loc[nonempty_alt, altlabel] + ']'
         df['label'] = df[label] + df[altlabel]
     else:
+        # Discard rows we don't care about
         valid_rows = ~df[label].isnull()
         df = df.loc[valid_rows, [label]].copy()
         df['label'] = df[label]
 
+    # Convert to neuroglancer JSON format
     info = serialize_segment_properties_info(df[['label']])
     return jsonify(info), HTTPStatus.OK
 
@@ -81,6 +98,20 @@ def serialize_segment_properties_info(df, output_path=None):
     """
     Construct segment properties JSON info file according to the neuroglancer spec:
     https://github.com/google/neuroglancer/blob/master/src/neuroglancer/datasource/precomputed/segment_properties.md
+
+    Note:
+        This function doesn't yet support 'tags'.
+
+    Args:
+        df:
+            DataFrame.  Index must be named 'body'.
+            Every column will be interpreted as a segment property.
+            Note that properties named 'label' and 'description' have special meaning in neuroglancer.
+        output_path:
+            If provided, export the JSON to a file.
+
+    Returns:
+        JSON data (as a dict)
     """
     assert df.index.name == 'body'
     info = {
@@ -90,6 +121,9 @@ def serialize_segment_properties_info(df, output_path=None):
             'properties': []
         }
     }
+
+    if 'tags' in df.columns:
+        raise NotImplementedError("tags not yet supported")
 
     for col in df.columns:
         prop = {}
