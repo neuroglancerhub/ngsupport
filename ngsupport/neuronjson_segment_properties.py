@@ -12,6 +12,14 @@ logger = logging.getLogger(__name__)
 
 
 def neuronjson_segment_properties_info(server, uuid, instance, label, altlabel=None):
+    try:
+        info = _neuronjson_segment_properties_info(server, uuid, instance, label, altlabel)
+        return jsonify(info), HTTPStatus.OK
+    except requests.HTTPError as ex:
+        return Response(ex.response.content, ex.response.status_code)
+
+
+def _neuronjson_segment_properties_info(server, uuid, instance, label, altlabel):
     """
     Respond to the segment properties /info endpoint:
     /neuronjson_segment_synapse_properties/<server>/<uuid>/<instance>/<int:n>/info
@@ -26,22 +34,26 @@ def neuronjson_segment_properties_info(server, uuid, instance, label, altlabel=N
     - converts the results to the JSON format neuroglancer expects to see for segment properties.
     """
     if not server.startswith('http'):
-        server = f'https://{server}'
+        if ':' in server:
+            server = f'http://{server}'
+        else:
+            server = f'https://{server}'
 
     # Fetch from DVID
-    params = {'app': 'ngsupport'}
-    if '_user' in label or (altlabel and '_user' in altlabel):
-        params = {'show': 'user'}
-    if '_time' in label or (altlabel and '_time' in altlabel):
-        params = {'show': 'all'}
+    need_user = bool(('_user' in label) or (altlabel and '_user' in altlabel))
+    need_time = bool(('_time' in label) or (altlabel and '_time' in altlabel))
+    show = {
+        (False, False): None,
+        (True, False): 'user',
+        (False, True): 'time',
+        (True, True): 'all',
+    }[(need_user, need_time)]
 
-    r = requests.get(f"{server}/api/node/{uuid}/{instance}/all", params=params)
+    fields = [label]
+    if altlabel:
+        fields = [label, altlabel]
 
-    if r.status_code != 200:
-        msg = r.content.decode('utf-8')
-        return Response(msg, r.status_code)
-
-    df = pd.DataFrame(r.json()).set_index('bodyid').rename_axis('body')
+    df = fetch_all(server, uuid, instance, fields=fields, show=show, format='pandas')
 
     # If using group column, convert to strings.
     if 'group' in (label, altlabel):
@@ -68,8 +80,7 @@ def neuronjson_segment_properties_info(server, uuid, instance, label, altlabel=N
         df['label'] = df[label]
 
     # Convert to neuroglancer JSON format
-    info = serialize_segment_properties_info(df[['label']])
-    return jsonify(info), HTTPStatus.OK
+    return serialize_segment_properties_info(df[['label']])
 
 
 def neuronjson_segment_synapse_properties_info(server, uuid, instance, n):
@@ -150,6 +161,33 @@ def serialize_segment_properties_info(df, output_path=None):
         with open(output_path, 'w') as f:
             json.dump(info, f, indent=2)
     return info
+
+
+def fetch_all(server, uuid, instance='segmentation_annotations', *, show=None, fields=None, format='pandas', session=None):
+    if session is None:
+        session = requests.Session()
+        session.params = {'app': 'ngsupport'}
+
+    assert show in ('user', 'time', 'all', None)
+    assert format in ('pandas', 'json')
+
+    params = {}
+    if show:
+        params['show'] = show
+
+    if fields:
+        if isinstance(fields, str):
+            fields = [fields]
+        params['fields'] = ','.join(fields)
+
+    url = f'{server}/api/node/{uuid}/{instance}/all'
+    r = session.get(url, params=params)
+    r.raise_for_status()
+
+    if format == 'pandas':
+        return pd.DataFrame(r.json()).set_index('bodyid').rename_axis('body')
+    else:
+        return sorted(r.json(), key=lambda d: d['bodyid'])
 
 
 def fetch_top(server, uuid, instance, n, element_type, format='pandas'):
