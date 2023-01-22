@@ -39,6 +39,14 @@ def _neuronjson_segment_properties_info(server, uuid, instance, label, altlabel)
         else:
             server = f'https://{server}'
 
+    if not label and not altlabel:
+        return Response("No fields specified", HTTPStatus.BAD_REQUEST)
+
+    if not label:
+        label, altlabel = altlabel, None
+    if label == altlabel:
+        altlabel = None
+
     # Fetch from DVID
     need_user = bool(('_user' in label) or (altlabel and '_user' in altlabel))
     need_time = bool(('_time' in label) or (altlabel and '_time' in altlabel))
@@ -54,6 +62,13 @@ def _neuronjson_segment_properties_info(server, uuid, instance, label, altlabel)
         fields = [label, altlabel]
 
     df = fetch_all(server, uuid, instance, fields=fields, show=show, format='pandas')
+    if len(df) == 0:
+        return serialize_segment_properties_info(df)
+
+    if label not in df.columns:
+        df[label] = np.nan
+    if altlabel not in df.columns:
+        df[altlabel] = np.nan
 
     # If using group column, convert to strings.
     if 'group' in (label, altlabel):
@@ -183,11 +198,14 @@ def fetch_all(server, uuid, instance='segmentation_annotations', *, show=None, f
     url = f'{server}/api/node/{uuid}/{instance}/all'
     r = session.get(url, params=params)
     r.raise_for_status()
+    values = r.json() or []
 
     if format == 'pandas':
-        return pd.DataFrame(r.json()).set_index('bodyid').rename_axis('body')
+        if not values:
+            return pd.DataFrame([]).rename_axis('body')
+        return pd.DataFrame(values).set_index('bodyid').rename_axis('body')
     else:
-        return sorted(r.json(), key=lambda d: d['bodyid'])
+        return sorted(values, key=lambda d: d['bodyid'])
 
 
 def fetch_top(server, uuid, instance, n, element_type, format='pandas'):
