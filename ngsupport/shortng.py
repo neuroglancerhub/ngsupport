@@ -198,6 +198,8 @@ def _web_response(url, bucket_path):
     """
     download_url = f"https://storage.googleapis.com/{bucket_path}"
 
+    # FIXME: The proper way to do this is with a jinja template.
+
     script = dedent("""\
         <script type="text/javascript">
         function copy_to_clipboard(text) {
