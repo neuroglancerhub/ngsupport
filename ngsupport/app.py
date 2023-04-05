@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 # TODO: Limit origin list here: CORS(app, origins=[...])
-CORS(app, origins=r'.*\.janelia\.org', supports_credentials=True)
+CORS(app, origins=[r'.*\.janelia\.org', r'neuroglancer-demo\.appspot\.com'], supports_credentials=True)
 #CORS(app)
 
 
