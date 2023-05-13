@@ -2,7 +2,7 @@ import os
 import copy
 import logging
 import subprocess
-from functools import partial
+from functools import partial, cache
 
 import numpy as np
 
@@ -13,7 +13,7 @@ from requests import RequestException, HTTPError
 from neuclease import configure_default_logging
 from neuclease.util import Timer, compute_parallel, downsample_mask
 from neuclease.dvid import (default_dvid_session, find_master, fetch_sparsevol_coarse,
-                            fetch_sparsevol, post_key, fetch_commit)
+                            fetch_sparsevol, post_key, fetch_commit, fetch_instance_info)
 from neuclease.dvid.rle import blockwise_masks_from_ranges
 
 from vol2mesh import Mesh
@@ -22,12 +22,6 @@ logger = logging.getLogger(__name__)
 configure_default_logging()
 
 MB = 2**20
-
-# FIXME: For now, this resolution is hard-coded.
-VOXEL_NM = 8.0
-
-# FIXME: This shouldn't be hard-coded, either
-MAX_SCALE = 7
 
 # TODO: Should this function check DVID to see if a mesh already exists
 #       for the requested body, or should we assume the caller doesn't
@@ -200,6 +194,9 @@ def generate_small_mesh(dvid, uuid, segmentation, body, scale=5, supervoxels=Fal
         log_prefix = f"SV {body}"
     else:
         log_prefix = f"Body {body}"
+
+    seg_info = fetch_instance_info_cached(dvid, uuid, segmentation)
+    VOXEL_NM = np.array(seg_info['Extended']['VoxelSize'])
 
     with Timer(f"{log_prefix}: Fetching coarse sparsevol", logger, log_start=False):
         svc_ranges = fetch_sparsevol_coarse(dvid, uuid, segmentation, body, supervoxels=supervoxels, format='ranges', session=dvid_session)
@@ -445,3 +442,8 @@ def store_mesh(dvid, uuid, mesh_kv, mesh_bytes, body, scale, supervoxels, dvid_s
         return False
     else:
         return True
+
+
+@cache
+def fetch_instance_info_cached(server, uuid, instance):
+    return fetch_instance_info(server, uuid, instance)
