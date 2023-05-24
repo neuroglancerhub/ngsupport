@@ -116,9 +116,49 @@ def neuronjson_segment_synapse_properties_info(server, uuid, instance, n):
     missing_psd = fetch_counts(server, uuid, instance, top_syn.loc[top_syn['PostSyn'].isnull()].index, 'PostSyn')
     top_syn['PreSyn'].update(missing_tbar)
     top_syn['PostSyn'].update(missing_psd)
-    top_syn = top_syn.astype(int)
+    top_syn = top_syn.astype(np.int32)
 
-    info = serialize_segment_properties_info(top_syn.astype(np.int32))
+    info = serialize_segment_properties_info(top_syn)
+    return jsonify(info), HTTPStatus.OK
+
+
+def neuronjson_segment_note_properties_info(server, uuid, instance, propname, n):
+    """
+    Fetch the annotation 'Note' counts for the top N bodies and use them to
+    return neuroglancer numerical segment properties in the appropriate JSON format.
+
+    Except for synapses, most point annotation instances in dvid just store a
+    generic 'Note' annotation type.  Examples of such instances in our CNS include:
+    - neck-fibers-anterior
+    - nuclei-centroids
+    - segmentation_todo
+    - bookmark_annotations
+
+    Args:
+        server:
+            DVID server
+        uuid:
+            DVID uuid
+        instance:
+            DVID 'annotation' instance name
+        propname:
+            Arbitrary string.  Will become the name of the property in the neuroglancer display.
+        n: How many segment IDs to fetch via the /top endpoint
+
+    Returns:
+        neuroglancer segment properties JSON data
+    """
+    if not server.startswith('http'):
+        server = f'https://{server}'
+
+    # Fetch from DVID
+    top_note = (
+        fetch_top(server, uuid, instance, n, 'Note')
+        .rename(propname)
+        .astype(np.int32)
+        .to_frame()
+    )
+    info = serialize_segment_properties_info(top_note)
     return jsonify(info), HTTPStatus.OK
 
 
