@@ -138,16 +138,27 @@ def _parse_state(link, from_slack):
     Extract the neuroglancer state JSON data from the given link.
     Raise ErrMsg if something went wrong.
     """
+    if link.startswith('{'):
+        try:
+            state = json.loads(link)
+            return 'https://clio-ng.janelia.org', state
+        except ValueError as ex:
+            msg = (
+                "It appears that JSON was provided instead of "
+                f"a link, but I couldn't parse the JSON:\n{link}"
+            )
+            raise ErrMsg(msg, from_slack) from ex
+
     try:
-        url_base, pseudo_json = link.split('#!')
-        pseudo_json = urllib.parse.unquote(pseudo_json)
-        state = json.loads(pseudo_json)
-    except ValueError:
+        url_base, encoded_json = link.split('#!')
+        encoded_json = urllib.parse.unquote(encoded_json)
+        state = json.loads(encoded_json)
+    except ValueError as ex:
         if from_slack:
             link = f"```{link}```"
         msg = f"Could not parse link:\n\n{link}"
         logger.error(msg)
-        raise ErrMsg(msg, from_slack)
+        raise ErrMsg(msg, from_slack) from ex
 
     if not (url_base.startswith('http://') or url_base.startswith('https://')):
         msg = "Error: Filename must not contain spaces, and links must start with http or https"
@@ -200,7 +211,7 @@ def _web_response(url, bucket_path):
 
     # FIXME: The proper way to do this is with a jinja template.
 
-    script = dedent("""\
+    script = """
         <script type="text/javascript">
         function copy_to_clipboard(text) {
             try {
@@ -210,17 +221,19 @@ def _web_response(url, bucket_path):
                 console.error("Couldn't write to clipboard:", err)
             }
         }
-        </script>""")
+        </script>
+        """
 
-    style = dedent("""\
+    style = """
         <style>
             *{font-family: Verdana;}
             a {
                 text-decoration: none
             }
-        </style>""")
+        </style>
+        """
 
-    page = dedent("""\
+    page = dedent(f"""\
         <!doctype html>
         <html>
         <head>
@@ -238,5 +251,5 @@ def _web_response(url, bucket_path):
             <a href=shortener.html>[start over]</a>
         </h4>
         </body>
-        </html>""").format(**locals())
+        </html>""")
     return Response(page, 200, mimetype='text/html')
