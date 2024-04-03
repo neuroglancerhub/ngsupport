@@ -101,7 +101,7 @@ def _parse_request():
         # For simple testing.
         data = request.data.decode('utf-8').strip()
 
-    data = data.replace('`', '')
+    data = data.replace('`', '').strip()
     if data == "" and from_slack:
         msg = (
             "No link provided. Use one of the following formats:\n"
