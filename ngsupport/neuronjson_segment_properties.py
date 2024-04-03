@@ -71,18 +71,13 @@ def _neuronjson_segment_properties_info(server, uuid, instance, label, altlabel)
     if altlabel not in df.columns:
         df[altlabel] = np.nan
 
-    # If using group column, convert to strings.
-    if 'group' in (label, altlabel):
-        valid_group = ~df['group'].isnull()
-        df.loc[valid_group, 'group'] = df.loc[valid_group, 'group'].astype(int).astype(str)
-
-    df.loc[df[label] == "", label] = np.nan
+    df[label] = convert_to_string(df[label])
+    df[altlabel] = convert_to_string(df[altlabel])
 
     if altlabel:
         # Discard rows we don't care about
-        df.loc[df[altlabel] == "", altlabel] = np.nan
-        valid_rows = ~df[label].isnull() | ~df[altlabel].isnull()
-        df = df.loc[valid_rows, [label, altlabel]].fillna('').copy()
+        valid_rows = (df[label] != "") | (df[altlabel] != "")
+        df = df.loc[valid_rows, [label, altlabel]]
 
         # Concatenate main and secondary columns into
         # a single 'label' for neuroglancer to display.
@@ -92,12 +87,28 @@ def _neuronjson_segment_properties_info(server, uuid, instance, label, altlabel)
         df[propname] = df[label] + df[altlabel]
     else:
         # Discard rows we don't care about
-        valid_rows = ~df[label].isnull()
-        df = df.loc[valid_rows, [label]].copy()
+        valid_rows = (df[label] != "")
+        df = df.loc[valid_rows, [label]]
         propname = label
 
     # Convert to neuroglancer JSON format
     return serialize_segment_properties_info(df[propname])
+
+
+def convert_to_string(s):
+    """
+    Convert a series to string, but if it's a float series, convert all values which
+    happen to be integers into True integers first (to avoid strings like "123.0").
+    """
+    if s.dtype == object:
+        return s.fillna('').astype(str)
+    if np.issubdtype(s.dtype, np.integer):
+        return s.astype(str)
+    if np.issubdtype(s.dtype, np.floating):
+        s = s.astype(object)
+        int_rows = s.notnull() & ~((s % 1).astype(bool))
+        s.loc[int_rows] = s.loc[int_rows].astype(int)
+        return s.fillna('').astype(str)
 
 
 def neuronjson_segment_synapse_properties_info(server, uuid, instance, n):
