@@ -23,10 +23,10 @@ def neuronjson_segment_properties_info(server, uuid, instance, label, altlabel=N
 def _neuronjson_segment_properties_info(server, uuid, instance, label, altlabel):
     """
     Respond to the segment properties /info endpoint:
-    /neuronjson_segment_synapse_properties/<server>/<uuid>/<instance>/<int:n>/info
+    /neuronjson_segment_properties/<server>/<uuid>/<instance>/<label>/<altlabel>/info
 
-    If an 'altlabel' column is specified, it will be appended to the label in brackets,
-    e.g. "Mi1 [Anchor]"
+    If an 'altlabel' parameter is specified, the corresponding field will be appended
+    to the label in brackets, e.g. "Mi1 [Anchor]"
 
     - Fetches all annotation data from DVID
     - selects the column(s) named in 'label' and (optionally) 'altlabel',
@@ -98,7 +98,7 @@ def _neuronjson_segment_properties_info(server, uuid, instance, label, altlabel)
 def convert_to_string(s):
     """
     Convert a series to string, but if it's a float series, convert all values which
-    happen to be integers into True integers first (to avoid strings like "123.0").
+    happen to be integers into actual ints first (to avoid strings like "123.0").
     """
     if s.dtype == object:
         return s.fillna('').astype(str)
