@@ -117,7 +117,7 @@ def _parse_request():
 
     if len(name_and_link) == 1 or name_and_link[0] == '{':
         filename = request.form.get('filename', None)
-        filename = filename or datetime.datetime.now().strftime('%Y-%m-%d.%H%M%S')
+        filename = filename or datetime.datetime.now().strftime('%Y-%m-%d.%H%M%S.%f')
         link = data
     else:
         filename = name_and_link[0]
