@@ -68,6 +68,12 @@ def _neuronjson_segment_properties_info(server, uuid, instance, label, altlabel=
     return neuronjson_segment_properties_info(server, uuid, instance, label, altlabel)
 
 
+@app.route('/neuronjson_segment_tags_properties/<server>/<uuid>/<instance>/<tags>/info')
+def _neuronjson_segment_tags_properties_info(server, uuid, instance, tags):
+    from ngsupport.neuronjson_segment_properties import neuronjson_segment_tags_properties_info
+    return neuronjson_segment_tags_properties_info(server, uuid, instance, tags)
+
+
 @app.route('/neuronjson_segment_synapse_properties/<server>/<uuid>/<instance>/<int:n>/info')
 def _neuronjson_segment_synapse_properties_info(server, uuid, instance, n):
     from ngsupport.neuronjson_segment_properties import neuronjson_segment_synapse_properties_info
