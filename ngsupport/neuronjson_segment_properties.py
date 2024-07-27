@@ -122,6 +122,8 @@ def neuronjson_segment_tags_properties_info(server, uuid, instance, tags):
     - selects the column(s) named in 'tags'
     - discards segment IDs which are empty for the selected columns.
     - Constructs a single 'tags' property (as JSON) for neuroglancer to display.
+    - Also supports special 'tags' such as '_has_type' or '_has_group',
+      which are calculated as bool columns from the corresponding annotation fields.
     """
     if not server.startswith('http'):
         server = f'https://{server}'
@@ -135,11 +137,26 @@ def neuronjson_segment_tags_properties_info(server, uuid, instance, tags):
     if any('_user' in t for t in tags):
         show = 'user'
 
-    df = fetch_all(server, uuid, instance, fields=tags, show=show, format='pandas')
+    fields = []
+    for t in tags:
+        if t.startswith('_has_'):
+            fields.append(t[len('_has_'):])
+        else:
+            fields.append(t)
+
+    df = fetch_all(server, uuid, instance, fields=fields, show=show, format='pandas')
     if len(df) == 0:
         return segment_properties_json(df)
 
-    info = segment_properties_json(df[tags], tag_cols=tags)
+    for t in tags:
+        if not t.startswith('_has_'):
+            continue
+        field = t[len('_has_'):]
+        if field in df.columns:
+            df[t] = df[field].notnull() & (df[field] != '')
+
+    valid_tags = sorted(set(tags) & set(df.columns))
+    info = segment_properties_json(df[valid_tags], tag_cols=valid_tags)
     return jsonify(info), HTTPStatus.OK
 
 
