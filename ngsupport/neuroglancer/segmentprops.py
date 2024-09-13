@@ -2,6 +2,7 @@
 Utility for converting a DataFrame to neuroglancer segment properties (a JSON object).
 """
 import json
+import warnings
 from collections import defaultdict
 from itertools import chain
 
@@ -249,6 +250,7 @@ def _scalar_property_types(df, label_col, description_col, string_cols, number_c
     """
     # Check for columns that were listed in multiple arguments (except tag_cols).
     listed_scalar_cols = [label_col, description_col, *string_cols, *number_cols]
+    listed_scalar_cols = [*filter(None, listed_scalar_cols)]
     listed_scalar_cols = pd.Series(listed_scalar_cols)
     dupes = listed_scalar_cols.loc[listed_scalar_cols.duplicated()].unique()
     if dupes := sorted(dupes):
@@ -417,17 +419,40 @@ def _convert_to_categorical(s):
             s = s.cat.remove_categories([False])
 
     s = s.astype('category', copy=False)
+    s = _replace_spaces(s)
 
     # We interpret empty string as null
     if '' in s.dtype.categories:
         s = s.cat.remove_categories([''])
 
-    # Spaces are forbidden in tags
-    s = s.cat.rename_categories([
-        str(cat).replace(' ', '_')
-        for cat in s.dtype.categories
-    ])
+    return s
 
+
+def _replace_spaces(s):
+    """
+    Replace all spaces in the given Categorical Series with underscores.
+    (Spaces are forbidden in neuroglancer tags.)
+    """
+    renames = pd.Series({
+        cat: str(cat).replace(' ', '_')
+        for cat in s.dtype.categories
+    })
+
+    # If both "foo bar_baz" and "foo_bar baz" exist in the original data,
+    # they will both map to "foo_bar_baz", and rename_categories() will
+    # fail unless we consolidate those cateogries before renaming.
+    if renames.duplicated().any():
+        renames_df = renames.reset_index()
+        renames_df.columns = ['old', 'new']
+        renames_df['consolidated_old'] = renames_df.groupby('new')['old'].transform('first')
+        replacements = renames_df.set_index('old')['consolidated_old']
+        with warnings.catch_warnings():
+            # https://github.com/pandas-dev/pandas/issues/57104
+            warnings.filterwarnings("ignore", ".*cases that preserve the categories.*", FutureWarning)
+            s = s.replace(replacements)
+        s = s.cat.remove_unused_categories()
+
+    s = s.cat.rename_categories(renames)
     return s
 
 
