@@ -2,8 +2,6 @@
 Utility for converting a DataFrame to neuroglancer segment properties (a JSON object).
 """
 import json
-import warnings
-from collections import defaultdict
 from itertools import chain
 
 import numpy as np
@@ -45,25 +43,25 @@ def segment_properties_json(
             Neuroglancer preserves that order when displaying columns of numeric properties.
 
         label_col:
-            Which column to use for the 'label' property which is shown in neuroglancer by default.
-            If you name the column 'label', then you need not provide it here.
+            Name of the column to use for the 'label' property, which is shown in neuroglancer by default.
+            If the column happens to be named 'label', then you need not provide it here.
             Or, if your dataframe contains only one column (and it's non-numeric), we assume it is the label.
 
         description_col:
-            Which column to use as the 'description' property.
+            Name of the column to use as the 'description' property.
             If you name the column 'description', then you need not provide it here.
 
         string_cols:
-            Columns to represent as 'string' properties.
+            Names of the columns to represent as 'string' properties.
             (Usually unnecessary.  Non-numeric columns become string properties by default,
             unless they are named in tag_cols.)
 
         number_cols:
-            Columns to represent as 'number' properties.
+            Names of the columns to represent as 'number' properties.
             (Usually unnecessary.  Numeric columns become number properties by default.)
 
         tag_cols:
-            Columns which should be used to generate the (combined) 'tags' property.
+            Names of the columns from which to generate the (combined) 'tags' property.
             If you want a column to be used for both tags _and_ a different property,
             be sure to list it explicitly in both arguments.  For example:
 
@@ -174,20 +172,9 @@ def segment_properties_json(
                 }
             }
     """
-    assert df.index.name in ('body', 'segment')
-    assert tag_prefix_mode in ('all', 'disambiguate', None)
-    assert not (dupes := df.columns.duplicated()).any(), \
-        f"Duplicated column names: {df.columns[dupes].tolist()}"
-
-    if isinstance(string_cols, str):
-        string_cols = [string_cols]
-    if isinstance(number_cols, str):
-        number_cols = [number_cols]
-    if isinstance(tag_cols, str):
-        tag_cols = [tag_cols]
-
-    if isinstance(df, pd.Series):
-        df = df.to_frame()
+    df, string_cols, number_cols, tag_cols = _validate_args(
+        df, label_col, description_col, string_cols, number_cols, tag_cols, tag_prefix_mode
+    )
 
     if drop_empty:
         df = _drop_empty_rows(df)
@@ -220,6 +207,37 @@ def segment_properties_json(
     return info
 
 
+def _validate_args(df, label_col, description_col, string_cols, number_cols, tag_cols, tag_prefix_mode):
+    """
+    Basic checks and convenience conversions where appropriate.
+    (Series -> DataFrame, str -> list)
+    """
+    if isinstance(df, pd.Series):
+        df = df.to_frame()
+
+    if isinstance(string_cols, str):
+        string_cols = [string_cols]
+    if isinstance(number_cols, str):
+        number_cols = [number_cols]
+    if isinstance(tag_cols, str):
+        tag_cols = [tag_cols]
+
+    assert df.index.name in ('body', 'segment')
+    assert tag_prefix_mode in ('all', 'disambiguate', None)
+    assert not (dupes := df.columns.duplicated()).any(), \
+        f"Duplicated column names: {df.columns[dupes].tolist()}"
+
+    # Check for columns that were listed in multiple arguments (except tag_cols).
+    listed_scalar_cols = [label_col, description_col, *string_cols, *number_cols]
+    listed_scalar_cols = [*filter(None, listed_scalar_cols)]
+    listed_scalar_cols = pd.Series(listed_scalar_cols)
+    dupes = listed_scalar_cols.loc[listed_scalar_cols.duplicated()].unique()
+    if dupes := sorted(dupes):
+        raise RuntimeError(f"Some columns were included in multiple arguments: {dupes}")
+
+    return df, string_cols, number_cols, tag_cols
+
+
 def _drop_empty_rows(df):
     if len(df) == 0 or len(df.columns) == 0:
         return df
@@ -242,20 +260,14 @@ def _drop_empty_rows(df):
 
 def _scalar_property_types(df, label_col, description_col, string_cols, number_cols, tag_cols):
     """
-    Determine the full set of scalar (non-tag) properties that should be emitted
-    along with their types, based on the user's explicitly provided lists plus
-    default types for the unlisted columns in df.
+    Determine the names and neuroglancer property types of all scalar (non-tag)
+    properties that can be extracted from the given DataFrame.
+
+    The property types will be determined from the user's explicitly provided lists
+    when possible, otherwise they're inferred from the column name/dtype.
 
     Here, 'scalar' includes all non-tag types: number, string, label, description.
     """
-    # Check for columns that were listed in multiple arguments (except tag_cols).
-    listed_scalar_cols = [label_col, description_col, *string_cols, *number_cols]
-    listed_scalar_cols = [*filter(None, listed_scalar_cols)]
-    listed_scalar_cols = pd.Series(listed_scalar_cols)
-    dupes = listed_scalar_cols.loc[listed_scalar_cols.duplicated()].unique()
-    if dupes := sorted(dupes):
-        raise RuntimeError(f"Some columns were included in multiple arguments: {dupes}")
-
     # Start with the provided types and then auto-type the other columns below.
     # We initialize first with tags, but permit overwriting those with scalar.
     # (A column is are permitted to be listed twice if it's both tag and scalar.)
@@ -298,7 +310,8 @@ def _scalar_property_types(df, label_col, description_col, string_cols, number_c
             prop_types[name] = 'string'
 
     # Re-order to match original input columns.
-    # Property order determines appearance order in neuroglancer.
+    # Property order determines appearance order in neuroglancer,
+    # at least for numeric properties.
     prop_types = {c: prop_types[c] for c in df.columns}
 
     # Return scalar properties only
@@ -327,22 +340,23 @@ def _scalar_property_json(s, prop_type, description):
 
 
 def _scalar_number_property_json(s, description):
-    if s.isnull().any():
-        raise RuntimeError(
-            f"Column {s.name} contans NaN entries. "
-            "I'm not sure what to do with NaN values in numeric properties."
-        )
-
-    if s.dtype == np.float64:
-        s = s.astype(np.float32)
+    """
+    Constructs the JSON for a 'number' property.
+    """
+    dtype_name = s.dtype.name
 
     if s.dtype in (np.int64, np.uint64):
-        s = _downcast_int64_series(s)
+        dtype_name = _select_int64_downcast(s)
+
+    if np.issubdtype(s.dtype, np.floating):
+        dtype_name = 'float32'
+        if s.isnull().any():
+            raise RuntimeError(f"Numeric column '{s.name}' contains NaN.")
 
     prop = {
         'id': s.name,
         'type': 'number',
-        'data_type': s.dtype.name,
+        'data_type': dtype_name,
         'values': s.tolist()
     }
 
@@ -352,12 +366,12 @@ def _scalar_number_property_json(s, description):
     return prop
 
 
-def _downcast_int64_series(s):
-    # Convert int64 to (u)int32 if we can do so losslessly.
+def _select_int64_downcast(s):
+    # Select (u)int32 if we can do so losslessly.
     for dtype32 in (np.int32, np.uint32):
         info32 = np.iinfo(dtype32)
         if s.min() >= info32.min and s.max() <= info32.max:
-            return s.astype(dtype32)
+            return info32.dtype.name
 
     raise RuntimeError(
         f"Can't create a property for column: '{s.name}'. "
@@ -386,17 +400,17 @@ def _tags_property_json(df, tags_columns, tag_prefix_mode, tag_descriptions):
 
     # Tags are represented as a list-of-lists of sorted codes.
     codes_df = pd.DataFrame({c: s.cat.codes for c, s in tags_df.items()})
-    sorted_codes = np.sort(codes_df.to_numpy(), axis=1)
-    codes_lists = [
-        [x for x in row if x != -1]  # Drop nulls
-        for row in sorted_codes.tolist()
-    ]
+    sorted_codes = np.sort(codes_df.to_numpy(), axis=1).tolist()
+
+    # Drop nulls
+    for row in sorted_codes:
+        row[:] = [x for x in row if x != -1]
 
     prop = {
         'id': 'tags',
         'type': 'tags',
         'tags': all_tags,
-        'values': codes_lists,
+        'values': sorted_codes,
     }
 
     if tag_descriptions:
@@ -433,27 +447,18 @@ def _replace_spaces(s):
     Replace all spaces in the given Categorical Series with underscores.
     (Spaces are forbidden in neuroglancer tags.)
     """
-    renames = pd.Series({
+    renames = {
         cat: str(cat).replace(' ', '_')
         for cat in s.dtype.categories
-    })
+    }
 
-    # If both "foo bar_baz" and "foo_bar baz" exist in the original data,
-    # they will both map to "foo_bar_baz", and rename_categories() will
-    # fail unless we consolidate those cateogries before renaming.
-    if renames.duplicated().any():
-        renames_df = renames.reset_index()
-        renames_df.columns = ['old', 'new']
-        renames_df['consolidated_old'] = renames_df.groupby('new')['old'].transform('first')
-        replacements = renames_df.set_index('old')['consolidated_old']
-        with warnings.catch_warnings():
-            # https://github.com/pandas-dev/pandas/issues/57104
-            warnings.filterwarnings("ignore", ".*cases that preserve the categories.*", FutureWarning)
-            s = s.replace(replacements)
-        s = s.cat.remove_unused_categories()
-
-    s = s.cat.rename_categories(renames)
-    return s
+    try:
+        return s.cat.rename_categories(renames)
+    except ValueError:
+        # If both "foo bar_baz" and "foo_bar baz" exist in the
+        # original data, they will both map to "foo_bar_baz", and
+        # rename_categories() complains about the duplicate category.
+        return s.str.replace(' ', '_').astype('category')
 
 
 def _insert_tag_prefixes(df, tag_prefix_mode, orig_dtypes):
@@ -481,6 +486,8 @@ def _insert_tag_prefixes(df, tag_prefix_mode, orig_dtypes):
             # the column name is the entire tag.
             continue
 
+        # Prefix must not contain spaces (forbidden by neuroglancer)
+        # or colons (because we use ':' as the separator).
         prefix = s.name.replace(' ', '_').replace(':', '_')
         df[c] = s.cat.rename_categories([
             f'{prefix}:{cat}'
@@ -498,28 +505,24 @@ def _disambiguate_tags(df):
 
     Modifies df in-place.
     """
-    # List the columns in which each tag appears:
-    # {tag: [column, column, ...], ...}
-    tag_cols = defaultdict(list)
-    for col in df.columns:
-        for tag in df[col].dtype.categories:
-            tag_cols[tag].append(col)
+    col_tags = [
+        (col, tag)
+        for col in df.columns
+        for tag in df[col].dtype.categories
+    ]
+    col_tags = pd.DataFrame(col_tags, columns=['col', 'tag'])
 
-    # Build the renaming mapping for each column:
-    # {
-    #   column: {tag: new_tag, tag: new_tag, ...},
-    #   column: {tag: new_tag, tag: new_tag, ...}, ...
-    # }
-    all_renames = defaultdict(dict)
-    for tag, cols in tag_cols.items():
-        if len(cols) == 1:
-            continue
-        for col in cols:
-            prefix = col.replace(' ', '_').replace(':', '_')
-            all_renames[col][tag] = f'{prefix}:{tag}'
+    # Drop everything except the duplicate tags.
+    is_dup = col_tags.duplicated('tag', keep=False)
+    col_tags = col_tags.loc[is_dup].copy()
 
-    # Replace old names with new.
-    for col, renames in all_renames.items():
+    # Prefix must not contain spaces (forbidden by neuroglancer)
+    # or colons (because we use ':' as the separator).
+    prefixes = col_tags['col'].str.replace(r'[: ]', '_')
+    col_tags['new_tag'] = prefixes + ':' + col_tags['tag']
+
+    for col, old_new_df in col_tags.groupby('col')[['tag', 'new_tag']]:
+        renames = dict(old_new_df.to_numpy())
         df[col] = df[col].cat.rename_categories(renames)
 
 
