@@ -1,8 +1,9 @@
 """
-Utility for converting a DataFrame to neuroglancer segment properties (a JSON object).
+Utility for converting a DataFrame to neuroglancer segment properties (a JSON document).
 """
 import json
 from itertools import chain
+from collections.abc import Iterable, Mapping
 
 import numpy as np
 import pandas as pd
@@ -17,6 +18,7 @@ def segment_properties_json(
     number_cols=[],
     tag_cols=[],
     tag_prefix_mode='all',
+    sort_tags=False,
     tag_descriptions={},
     col_descriptions={},
     drop_empty=True,
@@ -82,6 +84,15 @@ def segment_properties_json(
 
             - If None, then no disambiguation is performed.
 
+        sort_tags:
+            If True, order tags alphabetically (after prefixes are applied, if any) so they
+            are listed in sorted order in the neuroglancer UI.
+            Otherwise, tags are listed according to the order given by 'tag_cols',
+            with tags from earlier columns preceding tags from later columns,
+            but tags within each column will be sorted with respect to each other.
+            Note: For categorical input columns with ordered categories,
+            the sort order is determined by the categories, not alphanumeric sorting.
+
         tag_descriptions:
             A dict of {tag: description} describing each tag value.
 
@@ -126,7 +137,7 @@ def segment_properties_json(
             {
                 "@type": "neuroglancer_segment_properties",
                 "inline": {
-                    "ids": ["910719", "160503", "908822", "10552", "43797", "232845", "547654", "803197", "75597", "165485"]
+                    "ids": ["910719", "160503", "908822", "10552", "43797", "232845", "547654", "803197", "75597", "165485"],
                     "properties": [
                         {
                             "id": "type",
@@ -173,29 +184,35 @@ def segment_properties_json(
             }
     """
     df, string_cols, number_cols, tag_cols = _validate_args(
-        df, label_col, description_col, string_cols, number_cols, tag_cols, tag_prefix_mode
+        df, label_col, description_col, string_cols, number_cols,
+        tag_cols, tag_prefix_mode, tag_descriptions, col_descriptions
     )
 
     if drop_empty:
         df = _drop_empty_rows(df)
 
+    # Determine the neuroglancer property type for each column (except tags).
     scalar_types = _scalar_property_types(
         df, label_col, description_col, string_cols, number_cols, tag_cols
     )
 
+    # Construct JSON for all properties except tags.
     json_props = []
     for col, prop_type in scalar_types.items():
-        j = _scalar_property_json(df[col], prop_type, col_descriptions.get(col))
-        json_props.append(j)
+        jsn = _scalar_property_json(df[col], prop_type, col_descriptions.get(col))
+        json_props.append(jsn)
 
-    if tag_cols:
-        tags_prop = _tags_property_json(df, tag_cols, tag_prefix_mode, tag_descriptions)
-        json_props.append(tags_prop)
+    # Construct JSON for tags.
+    if len(tag_cols):
+        jsn = _tags_property_json(df, tag_cols, tag_prefix_mode, sort_tags, tag_descriptions)
+        json_props.append(jsn)
 
+    # Assemble the complete output.
+    segment_ids = [str(idx) for idx in df.index]
     info = {
         '@type': 'neuroglancer_segment_properties',
         'inline': {
-            'ids': [str(idx) for idx in df.index],
+            'ids': segment_ids,
             'properties': json_props
         }
     }
@@ -207,7 +224,8 @@ def segment_properties_json(
     return info
 
 
-def _validate_args(df, label_col, description_col, string_cols, number_cols, tag_cols, tag_prefix_mode):
+def _validate_args(df, label_col, description_col, string_cols, number_cols,
+                   tag_cols, tag_prefix_mode, tag_descriptions, col_descriptions):
     """
     Basic checks and convenience conversions where appropriate.
     (Series -> DataFrame, str -> list)
@@ -221,6 +239,13 @@ def _validate_args(df, label_col, description_col, string_cols, number_cols, tag
         number_cols = [number_cols]
     if isinstance(tag_cols, str):
         tag_cols = [tag_cols]
+
+    assert isinstance(df, pd.DataFrame)
+    assert isinstance(string_cols, Iterable)
+    assert isinstance(number_cols, Iterable)
+    assert isinstance(tag_cols, Iterable)
+    assert isinstance(tag_descriptions, Mapping)
+    assert isinstance(col_descriptions, Mapping)
 
     assert df.index.name in ('body', 'segment')
     assert tag_prefix_mode in ('all', 'disambiguate', None)
@@ -239,6 +264,10 @@ def _validate_args(df, label_col, description_col, string_cols, number_cols, tag
 
 
 def _drop_empty_rows(df):
+    """
+    Drop rows which contain only NaN, "", and False, and thus
+    will have no non-empty value for any neuroglancer property.
+    """
     if len(df) == 0 or len(df.columns) == 0:
         return df
 
@@ -264,13 +293,16 @@ def _scalar_property_types(df, label_col, description_col, string_cols, number_c
     properties that can be extracted from the given DataFrame.
 
     The property types will be determined from the user's explicitly provided lists
-    when possible, otherwise they're inferred from the column name/dtype.
+    when available; otherwise they're inferred from the column name/dtype.
 
     Here, 'scalar' includes all non-tag types: number, string, label, description.
     """
-    # Start with the provided types and then auto-type the other columns below.
-    # We initialize first with tags, but permit overwriting those with scalar.
-    # (A column is are permitted to be listed twice if it's both tag and scalar.)
+    # Start with the user-provided types and then auto-type the other columns below.
+    # Although we won't include tag columns in the result, we temporarily store
+    # them in prop_types to avoid auto-typing them.
+    # Note:
+    #   The user is permitted to list tag columns in the scalar columns too,
+    #   in which case the scalar type takes precedence in this function.
     prop_types = {c: 'tags' for c in tag_cols}
     prop_types |= {c: 'string' for c in string_cols}
     prop_types |= {c: 'number' for c in number_cols}
@@ -283,7 +315,7 @@ def _scalar_property_types(df, label_col, description_col, string_cols, number_c
     if unknown_cols := set(prop_types.keys()) - set(df.columns):
         raise RuntimeError(f"Columns not found: {unknown_cols}")
 
-    # If there's only one column, and it wasn't explicitly listed,
+    # For convenience, if there's only one column, and it wasn't explicitly listed,
     # AND it's non-numeric, we presume it's meant to be the 'label' column.
     if (
         len(df.columns) == 1
@@ -367,7 +399,11 @@ def _scalar_number_property_json(s, description):
 
 
 def _select_int64_downcast(s):
-    # Select (u)int32 if we can do so losslessly.
+    """
+    Return either "int32" or "uint32" if the given (u)int64 Series
+    can be safely converted to one of those dtypes without overflow.
+    Otherwise, raise an error.
+    """
     for dtype32 in (np.int32, np.uint32):
         info32 = np.iinfo(dtype32)
         if s.min() >= info32.min and s.max() <= info32.max:
@@ -380,7 +416,7 @@ def _select_int64_downcast(s):
     )
 
 
-def _tags_property_json(df, tags_columns, tag_prefix_mode, tag_descriptions):
+def _tags_property_json(df, tag_cols, tag_prefix_mode, sort_tags, tag_descriptions):
     """
     Constructs the JSON for the 'tags' segment property.
     """
@@ -388,15 +424,19 @@ def _tags_property_json(df, tags_columns, tag_prefix_mode, tag_descriptions):
 
     # Individually convert each column to Categorical
     # before we combine into a unified Categorical below.
-    for c in tags_columns:
+    for c in tag_cols:
         tags_df[c] = _convert_to_categorical(df[c])
 
     _insert_tag_prefixes(tags_df, tag_prefix_mode, df.dtypes)
 
     # Convert to a single unified Categorical dtype.
     tag_sets = [dtype.categories for dtype in tags_df.dtypes]
-    all_tags = sorted({*chain(*tag_sets)})
-    tags_df = tags_df.astype(pd.CategoricalDtype(categories=all_tags))
+
+    # Deduplicate, but preserve order.
+    unique_tags = pd.Series([*chain(*tag_sets)]).unique().tolist()
+    if sort_tags:
+        unique_tags = sorted(unique_tags)
+    tags_df = tags_df.astype(pd.CategoricalDtype(categories=unique_tags))
 
     # Tags are represented as a list-of-lists of sorted codes.
     codes_df = pd.DataFrame({c: s.cat.codes for c, s in tags_df.items()})
@@ -409,12 +449,12 @@ def _tags_property_json(df, tags_columns, tag_prefix_mode, tag_descriptions):
     prop = {
         'id': 'tags',
         'type': 'tags',
-        'tags': all_tags,
+        'tags': unique_tags,
         'values': sorted_codes,
     }
 
     if tag_descriptions:
-        prop['tag_descriptions'] = _tag_description_list(all_tags, tag_descriptions)
+        prop['tag_descriptions'] = _tag_description_list(unique_tags, tag_descriptions)
 
     return prop
 
@@ -526,10 +566,10 @@ def _disambiguate_tags(df):
         df[col] = df[col].cat.rename_categories(renames)
 
 
-def _tag_description_list(all_tags, tag_descriptions):
+def _tag_description_list(unique_tags, tag_descriptions):
     """
     Given the list of all tags and a mapping of tags to descriptions,
-    return the descriptions in the same order as all_tags.
+    return the descriptions in the same order as unique_tags.
     """
     tag_descriptions = {
         str(k).replace(' ', '_'): v
@@ -537,7 +577,7 @@ def _tag_description_list(all_tags, tag_descriptions):
     }
 
     td = []
-    for t in all_tags:
+    for t in unique_tags:
         d = tag_descriptions.get(t, None)
 
         # If we didn't find it, try stripping the tag prefix (if any)
@@ -571,37 +611,44 @@ def segment_properties_to_dataframe(js):
         No attempt is made to parse the prefixes of the tags to group
         them into shared columns.
     """
+    segment_ids = [*map(int, js['inline']['ids'])]
+    segment_ids = pd.Index(segment_ids, name='segment')
+
     all_props = js['inline']['properties']
     scalar_props = [prop for prop in all_props if prop['type'] != 'tags']
     tags_props =   [prop for prop in all_props if prop['type'] == 'tags']
 
-    segment_ids = [*map(int, js['inline']['ids'])]
-    prop_ids = [prop['id'] for prop in scalar_props]
-    values = [prop['values'] for prop in scalar_props]
-    dtypes = {
+    scalar_values = {
+        prop['id']: prop['values']
+        for prop in scalar_props
+    }
+
+    scalar_dtypes = {
         prop['id']: prop['data_type']
         for prop in scalar_props
         if 'data_type' in prop
     }
 
-    df = pd.DataFrame(dict(zip(prop_ids, values)), segment_ids)
-    df = df.astype(dtypes)
+    scalar_df = pd.DataFrame(scalar_values, segment_ids).astype(scalar_dtypes)
     if not tags_props:
-        return df
+        return scalar_df
 
-    unique_tags = tags_props[0]['tags']
     code_lists = tags_props[0]['values']
+    unique_tags = tags_props[0]['tags']
+
+    segment_count = len(code_lists)
+    tag_count = len(unique_tags)
 
     # Flatten the lists of codes,
     # but keep track of the rows they came from.
     cols = [*chain(*code_lists)]
     rows = np.repeat(
-        range(len(code_lists)),
+        range(segment_count),
         [*map(len, code_lists)]
     )
 
-    flags = np.zeros((len(code_lists), len(unique_tags)), bool)
+    flags = np.zeros((segment_count, tag_count), bool)
     flags[rows, cols] = True
 
     tags_df = pd.DataFrame(flags, segment_ids, unique_tags)
-    return pd.concat((df, tags_df), axis=1)
+    return pd.concat((scalar_df, tags_df), axis=1)
