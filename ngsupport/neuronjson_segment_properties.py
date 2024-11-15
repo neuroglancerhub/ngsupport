@@ -155,8 +155,11 @@ def neuronjson_segment_tags_properties_info(server, uuid, instance, tags):
         if field in df.columns:
             df[t] = df[field].notnull() & (df[field] != '')
 
-    valid_tags = sorted(set(tags) & set(df.columns))
-    info = segment_properties_json(df[valid_tags], tag_cols=valid_tags)
+    valid_tags = set(tags) & set(df.columns)
+
+    # Preserve the user's column order, but eliminate invalid names and duplicates.
+    tags = pd.Series([t for t in tags if t in valid_tags]).unique().tolist()
+    info = segment_properties_json(df[tags], tag_cols=tags, sort_tags=False)
     return jsonify(info), HTTPStatus.OK
 
 
