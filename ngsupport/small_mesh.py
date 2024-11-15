@@ -196,7 +196,7 @@ def generate_small_mesh(dvid, uuid, segmentation, body, scale=5, supervoxels=Fal
         log_prefix = f"Body {body}"
 
     seg_info = fetch_instance_info_cached(dvid, uuid, segmentation)
-    VOXEL_NM = np.array(seg_info['Extended']['VoxelSize'])
+    VOXEL_NM = np.array(seg_info['Extended']['VoxelSize'])[::-1]
 
     with Timer(f"{log_prefix}: Fetching coarse sparsevol", logger, log_start=False):
         svc_ranges = fetch_sparsevol_coarse(dvid, uuid, segmentation, body, supervoxels=supervoxels, format='ranges', session=dvid_session)
