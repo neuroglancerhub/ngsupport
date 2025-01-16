@@ -17,11 +17,21 @@ To build FASTER using the most recent container as the cache:
 
     gcloud builds submit --config cloudbuild.yaml
 
-NOTE: Neither of the above commands will actually DEPLOY the container.
-      The easiest way to do that is via the google cloud console.
-
 
 Alteratively, just use docker to build locally:
 
     docker build . -t gcr.io/flyem-private/ngsupport
-    docker push  gcr.io/flyem-private/ngsupport
+
+To push to the Google Artifact Registry, you need to authenticate with Google cloud and configure Docker use those credentials:
+
+    gcloud auth login
+    gcloud auth configure-docker     # first time only
+
+Then:
+
+    docker push gcr.io/flyem-private/ngsupport
+
+
+NOTE: None of the above commands will actually DEPLOY the container.
+      The easiest way to do that is via the google cloud console.
+
