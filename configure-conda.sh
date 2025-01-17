@@ -10,6 +10,7 @@ ln -s /opt/conda/etc/profile.d/conda.sh /etc/profile.d/conda.sh
 source /opt/conda/etc/profile.d/conda.sh
 conda activate
 conda config --set show_channel_urls True
+conda config --add channels nodefaults
 conda config --add channels conda-forge
 conda config --add channels flyem-forge
 conda update --all --yes

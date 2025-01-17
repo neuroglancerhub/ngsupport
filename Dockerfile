@@ -10,7 +10,8 @@ ENV LANG=en_US.UTF-8
 
 RUN apt update -y \
     && apt upgrade -y \
-    && apt install -y tar bzip2 curl
+    && apt install -y tar bzip2 curl \
+    && apt clean
 
 # Set timezone to EST/EDT
 RUN ln -s /usr/share/zoneinfo/EST5EDT /etc/localtime
@@ -22,7 +23,7 @@ RUN /opt/docker/bin/configure-conda.sh
 # Install packages
 # FIXME: Use environment.yml
 RUN . /opt/conda/etc/profile.d/conda.sh \
- && conda create -n flyem python=3.12 flask flask-cors gunicorn google-cloud-storage neuclease 'vol2mesh>=0.1.post20'
+ && conda create -n flyem python=3.12 flask flask-cors gunicorn google-cloud-storage neuclease 'vol2mesh>=0.1.post24'
 
 ENV FLYEM_ENV=/opt/conda/envs/flyem
 
