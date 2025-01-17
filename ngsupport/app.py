@@ -47,19 +47,7 @@ def _block_mesh():
 def _locate_body():
     from ngsupport.locate_body import locate_body
     return locate_body()
-
-
-@app.route('/shortng', methods=['POST'])
-def _shortng():
-    from ngsupport.shortng import shortng
-    return shortng()
-
-
-@app.route('/shortener.html')
-def _shortener():
-    from ngsupport.shortng import shortener
-    return shortener()
-
+    
 
 @app.route('/neuronjson_segment_properties/<server>/<uuid>/<instance>/<label>/info')
 @app.route('/neuronjson_segment_properties/<server>/<uuid>/<instance>/<label>/<altlabel>/info')

@@ -1,42 +1,39 @@
-FROM centos:8
+# FROM condaforge/miniforge3:24.9.2-0
+FROM condaforge/miniforge3
 
-#MAINTAINER janelia-flyem <janelia-flyem@janelia.hhmi.org>
+# this container was originally based on centos:8; the condaforge image
+#   is Ubuntu; not sure if the encoding and timezone lines are needed,
+#   but I've left them in
 
 # Set an encoding to make things work smoothly.
-ENV LANG en_US.UTF-8
+ENV LANG=en_US.UTF-8
 
-# Resolves a nasty NOKEY warning that appears when using yum.
-#RUN rpm --import /etc/pki/rpm-gpg/RPM-GPG-KEY-CentOS-8
-
-# Install basic requirements.
-RUN yum update -y \
- && yum install -y \
-            tar \
-            bzip2 \
-            curl \
- && yum clean all
+RUN apt update -y \
+    && apt upgrade -y \
+    && apt install -y tar bzip2 curl \
+    && apt clean
 
 # Set timezone to EST/EDT
-RUN rm /etc/localtime \
- && ln -s /usr/share/zoneinfo/EST5EDT /etc/localtime
+RUN ln -s /usr/share/zoneinfo/EST5EDT /etc/localtime
 
-COPY install-miniconda.sh /opt/docker/bin/install-miniconda.sh
-RUN /opt/docker/bin/install-miniconda.sh
+
+COPY configure-conda.sh /opt/docker/bin/configure-conda.sh
+RUN /opt/docker/bin/configure-conda.sh
 
 # Install packages
 # FIXME: Use environment.yml
-RUN source /opt/conda/etc/profile.d/conda.sh \
- && conda create -n flyem python=3.10 flask flask-cors gunicorn google-cloud-storage neuclease 'vol2mesh>=0.1.post20'
+RUN . /opt/conda/etc/profile.d/conda.sh \
+ && conda create -n flyem python=3.12 flask flask-cors gunicorn google-cloud-storage neuclease 'vol2mesh>=0.1.post24'
 
-ENV FLYEM_ENV /opt/conda/envs/flyem
+ENV FLYEM_ENV=/opt/conda/envs/flyem
 
 # Ensure that flyem/bin is on the PATH
 # FIXME: I suppose the more proper thing to do would be
 #        to call 'conda activate' in a custom ENTRYPOINT script.
-ENV PATH ${FLYEM_ENV}/bin:${PATH}
+ENV PATH=${FLYEM_ENV}/bin:${PATH}
 
 # Copy local code to the container image.
-ENV APP_HOME /ngsupport-home
+ENV APP_HOME=/ngsupport-home
 WORKDIR $APP_HOME
 COPY ngsupport ${APP_HOME}/ngsupport
 
