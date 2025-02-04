@@ -58,9 +58,14 @@ def _neuronjson_segment_properties_info(server, uuid, instance, label, altlabel)
         (True, True): 'all',
     }[(need_user, need_time)]
 
-    fields = [label]
-    if altlabel:
-        fields = [label, altlabel]
+    fields = set()
+    for field in [label, altlabel]:
+        if not field:
+            continue
+        fields.add(field)
+        fields.add(field.removesuffix('_user'))
+        fields.add(field.removesuffix('_time'))
+    fields = sorted(fields)
 
     df = fetch_all(server, uuid, instance, fields=fields, show=show, format='pandas')
     if len(df) == 0:
@@ -137,12 +142,13 @@ def neuronjson_segment_tags_properties_info(server, uuid, instance, tags):
     if any('_user' in t for t in tags):
         show = 'user'
 
-    fields = []
+    fields = set()
     for t in tags:
-        if t.startswith('_has_'):
-            fields.append(t[len('_has_'):])
-        else:
-            fields.append(t)
+        fields.add(t)
+        fields.add(t.removeprefix('_has_'))
+        fields.add(t.removesuffix('_user'))
+        fields.add(t.removesuffix('_time'))
+    fields = sorted(fields)
 
     df = fetch_all(server, uuid, instance, fields=fields, show=show, format='pandas')
     if len(df) == 0:
