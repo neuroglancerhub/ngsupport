@@ -30,11 +30,38 @@ app = Flask(__name__)
 #CORS(app, origins=[r'.*\.janelia\.org', r'neuroglancer-demo\.appspot\.com'], supports_credentials=True)
 CORS(app)
 
+#
+# FIXME:
+#   I'm sure this is not the idiomatic way to implement a big flask app.
+#   Rather than implementing all of our endpoints here and then calling out
+#   to separate files, there must be a simple and idiomatic way to implement
+#   endpoints in separate files.
+#
+
 
 @app.route('/small-mesh')
 def _small_mesh():
     from ngsupport.small_mesh import generate_and_store_mesh
     return generate_and_store_mesh()
+
+
+@app.route('/svmesh/<server>/<uuid>/<instance>/info')
+@app.route('/svmesh/<server>/<uuid>/<instance>/<segment_type>/info')
+def _svmesh_info(server, uuid, instance, segment_type):
+    from ngsupport.svmesh import svmesh_info
+    return svmesh_info()
+
+
+@app.route('/svmesh/<server>/<uuid>/<instance>/<segment_type>/<segment_id>:0')
+def _svmesh_manifest(server, uuid, instance, segment_type, segment_id):
+    from ngsupport.svmesh import svmesh_manifest
+    return svmesh_manifest(segment_id)
+
+
+@app.route('/svmesh/<server>/<uuid>/<instance>/<segment_type>/meshes/<int:segment_id>.ngmesh')
+def _svmesh_ngmesh(server, uuid, instance, segment_type, segment_id):
+    from ngsupport.svmesh import svmesh_ngmesh
+    return svmesh_ngmesh(server, uuid, instance, segment_type, segment_id)
 
 
 @app.route('/block-mesh', methods=['POST'])
@@ -47,7 +74,7 @@ def _block_mesh():
 def _locate_body():
     from ngsupport.locate_body import locate_body
     return locate_body()
-    
+
 
 @app.route('/neuronjson_segment_properties/<server>/<uuid>/<instance>/<label>/info')
 @app.route('/neuronjson_segment_properties/<server>/<uuid>/<instance>/<label>/<altlabel>/info')
