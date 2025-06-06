@@ -3,6 +3,7 @@ import logging
 
 from flask import Flask
 from flask_cors import CORS
+from flask_compress import Compress
 
 
 def configure_default_logging():
@@ -25,6 +26,9 @@ def configure_default_logging():
 configure_default_logging()
 logger = logging.getLogger(__name__)
 app = Flask(__name__)
+
+# Enable gzip compression for responses when client supports it
+Compress(app)
 
 # TODO: Limit origin list here: CORS(app, origins=[...])
 #CORS(app, origins=[r'.*\.janelia\.org', r'neuroglancer-demo\.appspot\.com'], supports_credentials=True)

@@ -54,6 +54,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/epoxy-1.5.10-h166bdaf_1.tar.bz2
       - conda: https://conda.anaconda.org/conda-forge/linux-64/fftw-3.3.10-nompi_hf1063bd_110.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/flask-3.1.1-pyhd8ed1ab_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/flask-compress-1.17-pyhd8ed1ab_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/flask-cors-6.0.0-pyhe01879c_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/font-ttf-dejavu-sans-mono-2.37-hab24e00_0.tar.bz2
       - conda: https://conda.anaconda.org/conda-forge/noarch/font-ttf-inconsolata-3.000-h77eed37_0.tar.bz2
@@ -889,6 +890,18 @@ packages:
   license_family: BSD
   size: 82531
   timestamp: 1747204126274
+- conda: https://conda.anaconda.org/conda-forge/noarch/flask-compress-1.17-pyhd8ed1ab_1.conda
+  sha256: 3a6af9fd50419a6528fc9a53839467fdc1f5c4ea023a41d1b8619a4277ffba44
+  md5: eff66e78df5757bf0c6ba11f13968fd7
+  depends:
+  - brotli-python
+  - flask
+  - python >=3.9
+  - zstandard
+  license: MIT
+  license_family: MIT
+  size: 18393
+  timestamp: 1734879622314
 - conda: https://conda.anaconda.org/conda-forge/noarch/flask-cors-6.0.0-pyhe01879c_0.conda
   sha256: 2505fe1aa7557fb002454a66f71e5f1e1d500011b78e194b73d0ed7cca36d3be
   md5: fd2e871153ff6e6a2058106bfa6f978c
