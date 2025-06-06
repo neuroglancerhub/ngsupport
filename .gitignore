@@ -10,3 +10,6 @@ logs
 *.egg-info
 
 .DS_Store
+# pixi environments
+.pixi
+*.egg-info
