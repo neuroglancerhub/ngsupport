@@ -1,0 +1,18 @@
+[workspace]
+authors = ["Stuart Berg <bergs@janelia.hhmi.org>"]
+channels = ["flyem-forge", "conda-forge"]
+name = "ngsupport"
+platforms = ["linux-64"]
+version = "0.1.0"
+
+[tasks]
+
+[dependencies]
+python = "3.12.*"
+flask = ">=3.1.1,<4"
+flask-cors = ">=6.0.0,<7"
+flask-compress = ">=1.17,<2"
+gunicorn = ">=23.0.0,<24"
+google-cloud-storage = ">=3.1.0,<4"
+neuclease = ">=0.7.6.post0.dev29,<0.8"
+vol2mesh = ">=0.1.post24"

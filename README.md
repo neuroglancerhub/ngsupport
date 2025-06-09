@@ -20,7 +20,7 @@ To build FASTER using the most recent container as the cache:
 
 Alteratively, just use docker to build locally:
 
-    docker build . -t gcr.io/flyem-private/ngsupport
+    docker build --platform linux/amd64 . -t gcr.io/flyem-private/ngsupport
 
 To push to the Google Artifact Registry, you need to authenticate with Google cloud and configure Docker use those credentials:
 
