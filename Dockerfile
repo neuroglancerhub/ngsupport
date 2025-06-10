@@ -28,7 +28,7 @@ ENV LANG=en_US.UTF-8
 # Set timezone to EST/EDT
 RUN ln -s /usr/share/zoneinfo/EST5EDT /etc/localtime
 
-ENV FLYEM_ENV=/app/.pixi/envs/prod
+ENV FLYEM_ENV=/app/.pixi/envs/default
 
 ENV PATH=${FLYEM_ENV}/bin:${PATH}
 
