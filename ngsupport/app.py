@@ -105,6 +105,25 @@ def _neuronjson_segment_note_properties_info(server, uuid, instance, propname, n
     return neuronjson_segment_note_properties_info(server, uuid, instance, propname, n)
 
 
+@app.route('/synapse_annotations/<server>/<uuid>/<instance>/info')
+def _synapse_annotations_info(server, uuid, instance):
+    from ngsupport.synapse_annotations import synapse_annotations_info
+    return synapse_annotations_info(server, uuid, instance)
+
+@app.route('/synapse_annotations/<server>/<uuid>/<instance>/<index_key>/<item_key>')
+def _synapse_annotations(server, uuid, instance, index_key, item_key):
+    if index_key == 'by_id':
+        return synapse_annotations_by_id(server, uuid, instance, syn_id)
+    elif index_key.startwith('by_rel'):
+        relationship = index_key[len('by_rel_'):]
+        return synapse_annotations_by_related_id(server, uuid, instance, relationship, segment_id)
+    else:
+        raise ValueError(f"Invalid index key: {index_key}")
+
+    from ngsupport.synapse_annotations import synapse_annotations
+    return synapse_annotations(server, uuid, instance, index_key, item_key)
+
+
 if __name__ == "__main__":
     print("Debug launch on http://0.0.0.0:8000")
     app.run(host='0.0.0.0', port=8000, debug=True)
