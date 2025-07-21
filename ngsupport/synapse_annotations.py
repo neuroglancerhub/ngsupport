@@ -22,12 +22,20 @@ def synapse_annotations_info(server, uuid, instance, annotation_type):
 @normalize_server
 def synapse_annotations_by_id(server, uuid, instance, annotation_type, syn_id):
     syn_id = int(syn_id)
-    return _synapse_annotations_by_id(server, uuid, instance, annotation_type, syn_id), HTTPStatus.OK
+    ann_buf = _synapse_annotations_by_id(server, uuid, instance, annotation_type, syn_id)
+    if ann_buf is not None:
+        return ann_buf, HTTPStatus.OK
+    else:
+        return Response(f"No annotations found for synapse ID: {syn_id}", HTTPStatus.NOT_FOUND)
 
 @normalize_server
 def synapse_annotations_by_related_id(server, uuid, instance, annotation_type, relationship, segment_id):
     segment_id = int(segment_id)
-    return _synapse_annotations_by_related_id(server, uuid, instance, annotation_type, relationship, segment_id), HTTPStatus.OK
+    ann_buf = _synapse_annotations_by_related_id(server, uuid, instance, annotation_type, relationship, segment_id)
+    if ann_buf is not None:
+        return ann_buf, HTTPStatus.OK
+    else:
+        return Response(f"No annotations found for {relationship} {segment_id}", HTTPStatus.NOT_FOUND)
 
 @cache
 def _synapse_annotations_info(server, uuid, syn_instance, annotation_type):
@@ -149,10 +157,14 @@ def _synapse_annotations_by_id(server, uuid, instance, annotation_type, syn_id):
 
     if annotation_type == 'line':
         syn_df, rel_df = fetch_elements(server, uuid, instance, [zyx, zyx+1], relationships=True, format='pandas')
+        if len(syn_df) == 0:
+            return None
         ann_df = _fetch_partner_properties(server, uuid, instance, syn_df, rel_df, info)
         assert len(ann_df) == 1, "Expected exactly one partner"
     else:
         ann_df = fetch_elements(server, uuid, instance, [zyx, zyx+1], relationships=False, format='pandas')
+        if len(ann_df) == 0:
+            return None
         ann_df.index = [syn_id]
 
         syn_info, seg_info = _get_instance_infos(server, uuid, instance)
@@ -190,10 +202,14 @@ def _synapse_annotations_by_related_id(server, uuid, instance, annotation_type, 
 
     if annotation_type == 'line':
         syn_df, partner_df = fetch_label(server, uuid, instance, segment_id, relationships=True, format='pandas')
+        if len(syn_df) == 0:
+            return None
         syn_df['body'] = segment_id
         ann_df = _fetch_partner_properties(server, uuid, instance, syn_df, partner_df, info)
     else:
         syn_df = fetch_label(server, uuid, instance, segment_id, relationships=False, format='pandas')
+        if len(syn_df) == 0:
+            return None
         syn_df.index = encode_coords_to_uint64(syn_df[[*'zyx']].values)
         syn_df['body'] = segment_id
         ann_df = _convert_from_strings(syn_df, info)
