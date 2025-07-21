@@ -58,8 +58,8 @@ def _synapse_annotations_info(server, uuid, syn_instance):
             "y": [nm_y * 1e-09, "m"],
             "z": [nm_z * 1e-09, "m"],
         },
-        "lower_bound": box_xyz.tolist(),
-        "upper_bound": box_xyz.tolist(),
+        "lower_bound": box_xyz[0].tolist(),
+        "upper_bound": box_xyz[1].tolist(),
         "annotation_type": "line",
         "properties": properties,
         "by_id": {
@@ -74,6 +74,7 @@ def _synapse_annotations_info(server, uuid, syn_instance):
 
 @cache
 def _get_instance_infos(server, uuid, syn_instance):
+    from neuclease.dvid.node import fetch_instance_info
     syn_info = fetch_instance_info(server, uuid, syn_instance)
 
     try:
@@ -124,7 +125,8 @@ def _synapse_annotations_by_related_id(server, uuid, instance, relationship, seg
 
     info = _synapse_annotations_info(server, uuid, instance)
 
-    rel_id = info['relationships'][relationship]['id']
+    rel_dict = {r['id']: r for r in info['relationships']}
+    rel_id = rel_dict[relationship]['id']
     syn_df, rel_df = fetch_label(server, uuid, instance, segment_id, relationships=True, format='pandas')
     partner_df = _fetch_partner_properties(server, uuid, instance, syn_df, rel_df, info)
 
@@ -145,8 +147,9 @@ def _synapse_annotations_by_related_id(server, uuid, instance, relationship, seg
         return open(f'{tmpdir}/by_rel_{rel_id}/{segment_id}', 'rb').read()
 
 def _fetch_partner_properties(server, uuid, instance, syn_df, rel_df, info):
-    from neuclease.dvid.util import swap_df_cols, encode_coords_to_uint64
-    from neuclease.dvid.annotation import fetch_label, fetch_point_elements_by_block, fetch_labels_batched
+    from neuclease.util import swap_df_cols, encode_coords_to_uint64
+    from neuclease.dvid.annotation import fetch_label, fetch_point_elements_by_block
+    from neuclease.dvid.labelmap import fetch_labels_batched
 
     syn_df = syn_df.drop(columns=['tags'])
     rel_df = rel_df.drop(columns=['rel'])
