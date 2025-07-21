@@ -10,17 +10,21 @@ import pandas as pd
 from flask import Response, jsonify
 from http import HTTPStatus
 
+from .util import normalize_server
 
 logger = logging.getLogger(__name__)
 
+@normalize_server
 def synapse_annotations_info(server, uuid, instance):
     info = _synapse_annotations_info(server, uuid, instance)
     return jsonify(info), HTTPStatus.OK
 
+@normalize_server
 def synapse_annotations_by_id(server, uuid, instance, syn_id):
     syn_id = int(syn_id)
     return _synapse_annotations_by_id(server, uuid, instance, syn_id), HTTPStatus.OK
 
+@normalize_server
 def synapse_annotations_by_related_id(server, uuid, instance, relationship, segment_id):
     segment_id = int(segment_id)
     return _synapse_annotations_by_related_id(server, uuid, instance, relationship, segment_id), HTTPStatus.OK

@@ -36,12 +36,6 @@ def _neuronjson_segment_properties_info(server, uuid, instance, label, altlabel)
     - combines label+altlabel into a single string for neuroglancer display,
     - converts the results to the JSON format neuroglancer expects to see for segment properties.
     """
-    if not server.startswith('http'):
-        if ':' in server:
-            server = f'http://{server}'
-        else:
-            server = f'https://{server}'
-
     if not label and not altlabel:
         return Response("No fields specified", HTTPStatus.BAD_REQUEST)
 
@@ -118,6 +112,7 @@ def convert_to_string(s):
         return s.fillna('').astype(str)
 
 
+@normalize_server
 def neuronjson_segment_tags_properties_info(server, uuid, instance, tags):
     """
     Respond to the segment tags /info endpoint:
@@ -132,9 +127,6 @@ def neuronjson_segment_tags_properties_info(server, uuid, instance, tags):
     - Also supports special 'tags' such as '_has_type' or '_has_group',
       which are calculated as bool columns from the corresponding annotation fields.
     """
-    if not server.startswith('http'):
-        server = f'https://{server}'
-
     tags = tags.split(',')
     if not tags:
         return Response("No fields specified", HTTPStatus.BAD_REQUEST)
@@ -171,14 +163,12 @@ def neuronjson_segment_tags_properties_info(server, uuid, instance, tags):
     return jsonify(info), HTTPStatus.OK
 
 
+@normalize_server
 def neuronjson_segment_synapse_properties_info(server, uuid, instance, n):
     """
     Fetch the synapse counts (PreSyn and PostSyn) for the top N bodies and use them to
     return neuroglancer numerical segment properties in the appropriate JSON format.
     """
-    if not server.startswith('http'):
-        server = f'https://{server}'
-
     # Fetch from DVID
     top_tbar = fetch_top(server, uuid, instance, n, 'PreSyn')
     top_psd = fetch_top(server, uuid, instance, n, 'PostSyn')
@@ -193,6 +183,7 @@ def neuronjson_segment_synapse_properties_info(server, uuid, instance, n):
     return jsonify(info), HTTPStatus.OK
 
 
+@normalize_server
 def neuronjson_segment_note_properties_info(server, uuid, instance, propname, n):
     """
     Fetch the annotation 'Note' counts for the top N bodies and use them to
