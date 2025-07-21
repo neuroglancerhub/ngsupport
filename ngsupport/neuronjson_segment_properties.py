@@ -7,11 +7,13 @@ import pandas as pd
 from flask import Response, jsonify
 from http import HTTPStatus
 
-from .neuroglancer import segment_properties_json
+from .ngextras import segment_properties_json
+from .util import normalize_server
 
 logger = logging.getLogger(__name__)
 
 
+@normalize_server
 def neuronjson_segment_properties_info(server, uuid, instance, label, altlabel=None):
     try:
         info = _neuronjson_segment_properties_info(server, uuid, instance, label, altlabel)

@@ -112,16 +112,18 @@ def _synapse_annotations_info(server, uuid, instance):
 
 @app.route('/synapse_annotations/<server>/<uuid>/<instance>/<index_key>/<item_key>')
 def _synapse_annotations(server, uuid, instance, index_key, item_key):
+    from ngsupport.synapse_annotations import synapse_annotations_by_id, synapse_annotations_by_related_id
+
     if index_key == 'by_id':
+        syn_id = int(item_key)
         return synapse_annotations_by_id(server, uuid, instance, syn_id)
-    elif index_key.startwith('by_rel'):
+    elif index_key.startswith('by_rel'):
         relationship = index_key[len('by_rel_'):]
+        segment_id = int(item_key)
         return synapse_annotations_by_related_id(server, uuid, instance, relationship, segment_id)
     else:
         raise ValueError(f"Invalid index key: {index_key}")
 
-    from ngsupport.synapse_annotations import synapse_annotations
-    return synapse_annotations(server, uuid, instance, index_key, item_key)
 
 
 if __name__ == "__main__":
