@@ -10,7 +10,9 @@ RUN pixi shell-hook > /shell-hook.sh
 # extend the shell-hook script to run the command passed to the container
 RUN echo 'exec "$@"' >> /shell-hook.sh
 
+RUN cat pixi.toml
 RUN pixi install
+RUN pixi list
 
 FROM ubuntu:24.04 AS production
 
