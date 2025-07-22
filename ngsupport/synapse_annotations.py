@@ -15,23 +15,23 @@ from .util import normalize_server
 logger = logging.getLogger(__name__)
 
 @normalize_server
-def synapse_annotations_info(server, uuid, instance, annotation_type):
-    info = _synapse_annotations_info(server, uuid, instance, annotation_type)
+def synapse_annotations_info(server, uuid, syn_instance, annotation_type):
+    info = _synapse_annotations_info(server, uuid, syn_instance, annotation_type)
     return jsonify(info), HTTPStatus.OK
 
 @normalize_server
-def synapse_annotations_by_id(server, uuid, instance, annotation_type, syn_id):
+def synapse_annotations_by_id(server, uuid, syn_instance, annotation_type, syn_id):
     syn_id = int(syn_id)
-    ann_buf = _synapse_annotations_by_id(server, uuid, instance, annotation_type, syn_id)
+    ann_buf = _synapse_annotations_by_id(server, uuid, syn_instance, annotation_type, syn_id)
     if ann_buf is not None:
         return ann_buf, HTTPStatus.OK
     else:
         return Response(f"No annotations found for synapse ID: {syn_id}", HTTPStatus.NOT_FOUND)
 
 @normalize_server
-def synapse_annotations_by_related_id(server, uuid, instance, annotation_type, relationship, segment_id):
+def synapse_annotations_by_related_id(server, uuid, syn_instance, annotation_type, relationship, segment_id):
     segment_id = int(segment_id)
-    ann_buf = _synapse_annotations_by_related_id(server, uuid, instance, annotation_type, relationship, segment_id)
+    ann_buf = _synapse_annotations_by_related_id(server, uuid, syn_instance, annotation_type, relationship, segment_id)
     if ann_buf is not None:
         return ann_buf, HTTPStatus.OK
     else:
@@ -143,31 +143,31 @@ def _get_instance_infos(server, uuid, syn_instance):
     return syn_info, seg_info
 
 
-def _synapse_annotations_by_id(server, uuid, instance, annotation_type, syn_id):
+def _synapse_annotations_by_id(server, uuid, syn_instance, annotation_type, syn_id):
     from neuroglancer.coordinate_space import CoordinateSpace
     from neuclease.util import decode_coords_from_uint64
     from neuclease.dvid.annotation import fetch_elements
     from neuclease.dvid.labelmap import fetch_label
     from neuclease.misc.neuroglancer.annotations.precomputed import write_precomputed_annotations
 
-    info = _synapse_annotations_info(server, uuid, instance, annotation_type)
+    info = _synapse_annotations_info(server, uuid, syn_instance, annotation_type)
 
     syn_ids = np.array([syn_id], np.uint64)
     zyx = decode_coords_from_uint64(syn_ids)[0]
 
     if annotation_type == 'line':
-        syn_df, rel_df = fetch_elements(server, uuid, instance, [zyx, zyx+1], relationships=True, format='pandas')
+        syn_df, rel_df = fetch_elements(server, uuid, syn_instance, [zyx, zyx+1], relationships=True, format='pandas')
         if len(syn_df) == 0:
             return None
-        ann_df = _fetch_partner_properties(server, uuid, instance, syn_df, rel_df, info)
+        ann_df = _fetch_partner_properties(server, uuid, syn_instance, syn_df, rel_df, info)
         assert len(ann_df) == 1, "Expected exactly one partner"
     else:
-        ann_df = fetch_elements(server, uuid, instance, [zyx, zyx+1], relationships=False, format='pandas')
+        ann_df = fetch_elements(server, uuid, syn_instance, [zyx, zyx+1], relationships=False, format='pandas')
         if len(ann_df) == 0:
             return None
         ann_df.index = [syn_id]
 
-        syn_info, seg_info = _get_instance_infos(server, uuid, instance)
+        syn_info, seg_info = _get_instance_infos(server, uuid, syn_instance)
         seg_name = seg_info["Base"]["Name"]
         ann_df['body'] = fetch_label(server, uuid, seg_name, zyx)
         ann_df = _convert_from_strings(ann_df, info)
@@ -189,25 +189,25 @@ def _synapse_annotations_by_id(server, uuid, instance, annotation_type, syn_id):
         return open(f'{tmpdir}/by_id/{syn_id}', 'rb').read()
 
 
-def _synapse_annotations_by_related_id(server, uuid, instance, annotation_type, relationship, segment_id):
+def _synapse_annotations_by_related_id(server, uuid, syn_instance, annotation_type, relationship, segment_id):
     from neuroglancer.coordinate_space import CoordinateSpace
     from neuclease.util import encode_coords_to_uint64
     from neuclease.dvid.annotation import fetch_label
     from neuclease.misc.neuroglancer.annotations.precomputed import write_precomputed_annotations
 
-    info = _synapse_annotations_info(server, uuid, instance, annotation_type)
+    info = _synapse_annotations_info(server, uuid, syn_instance, annotation_type)
 
     rel_dict = {r['id']: r for r in info['relationships']}
     rel_id = rel_dict[relationship]['id']
 
     if annotation_type == 'line':
-        syn_df, partner_df = fetch_label(server, uuid, instance, segment_id, relationships=True, format='pandas')
+        syn_df, partner_df = fetch_label(server, uuid, syn_instance, segment_id, relationships=True, format='pandas')
         if len(syn_df) == 0:
             return None
         syn_df['body'] = segment_id
-        ann_df = _fetch_partner_properties(server, uuid, instance, syn_df, partner_df, info)
+        ann_df = _fetch_partner_properties(server, uuid, syn_instance, syn_df, partner_df, info)
     else:
-        syn_df = fetch_label(server, uuid, instance, segment_id, relationships=False, format='pandas')
+        syn_df = fetch_label(server, uuid, syn_instance, segment_id, relationships=False, format='pandas')
         if len(syn_df) == 0:
             return None
         syn_df.index = encode_coords_to_uint64(syn_df[[*'zyx']].values)
@@ -231,7 +231,7 @@ def _synapse_annotations_by_related_id(server, uuid, instance, annotation_type, 
         return open(f'{tmpdir}/by_rel_{rel_id}/{segment_id}', 'rb').read()
 
 
-def _fetch_partner_properties(server, uuid, instance, syn_df, partner_df, info):
+def _fetch_partner_properties(server, uuid, syn_instance, syn_df, partner_df, info):
     from neuclease.util import swap_df_cols, encode_coords_to_uint64
     from neuclease.dvid.annotation import fetch_label, fetch_point_elements_by_block
     from neuclease.dvid.labelmap import fetch_labels_batched
@@ -241,12 +241,12 @@ def _fetch_partner_properties(server, uuid, instance, syn_df, partner_df, info):
 
     partner_df = syn_df.merge(partner_df, 'left', on=[*'xyz']).rename(columns={c: f'from_{c}' for c in syn_df.columns})
     partner_df = fetch_point_elements_by_block(
-        server, uuid, instance,
+        server, uuid, syn_instance,
         partner_df.rename(columns={f'to_{k}': k for k in 'xyz'})
     )
     partner_df = partner_df.rename(columns={c: f'to_{c}' for c in partner_df.columns if not c.startswith('from_')})
 
-    syn_info, seg_info = _get_instance_infos(server, uuid, instance)
+    syn_info, seg_info = _get_instance_infos(server, uuid, syn_instance)
     seg_name = seg_info["Base"]["Name"]
     if 'from_body' not in partner_df.columns:
         partner_df['from_body'] = fetch_labels_batched(
