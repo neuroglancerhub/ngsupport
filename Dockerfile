@@ -10,7 +10,9 @@ RUN pixi shell-hook > /shell-hook.sh
 # extend the shell-hook script to run the command passed to the container
 RUN echo 'exec "$@"' >> /shell-hook.sh
 
+RUN cat pixi.toml
 RUN pixi install
+RUN pixi list
 
 FROM ubuntu:24.04 AS production
 
@@ -28,7 +30,7 @@ ENV LANG=en_US.UTF-8
 # Set timezone to EST/EDT
 RUN ln -s /usr/share/zoneinfo/EST5EDT /etc/localtime
 
-ENV FLYEM_ENV=/app/.pixi/envs/prod
+ENV FLYEM_ENV=/app/.pixi/envs/default
 
 ENV PATH=${FLYEM_ENV}/bin:${PATH}
 
