@@ -1,3 +1,64 @@
+"""
+This module implements endpoints which serve neuroglancer precomputed annotations sourced from DVID.
+Only the Annotation ID Index and Related ID Index (specifically for a DVID labelmap segmentation) are supported.
+
+To add such a layer to neuroglancer, you must:
+
+- Create a DVID annotation instance
+- Sync it to a DVID labelmap instance
+- If there are any properties for the annotations, copy the neuroglancer 'properties' metadata
+  to the annotation instance's instance info, in the 'Tags' field, as a string, under the tag 'neuroglancer-properties'.
+- Also copy the neuroglancer 'relationships' metadata to the annotation instance's instance info,
+  in the 'Tags' field, as a string, under the tag 'neuroglancer-relationships'.
+  The relationships must include 'body_pre' and 'body_post', and the storage keys for all
+  relationship indexes must follow the pattern 'by_rel_<rel_name>'.
+  Relationships other than 'body_pre' and 'body_post' are permitted,
+  as long as the DVID annnotation elements contain 'Props' for them.
+  Although we cannot provide a "related object index" for relationships other than 'body_pre' and 'body_post',
+  the IDs extracted from the DVID annotation elements can be shown in the neuroglancer annotation selection pane.
+
+You can obtain the appropriate neuroglancer metadata for properties and relationships by
+exporting a sample of the annotations in unsharded format and extracting the 'properties',
+and 'relationships' sections of the resulting 'info' metadata.
+
+Example annotation instance info:
+
+    {
+        "Base": {
+            "TypeName": "annotation",
+            "TypeURL": "github.com/janelia-flyem/dvid/datatype/annotation",
+            "TypeVersion": "0.1",
+            "DataUUID": "bf751013dde649e0ad67f97ef1921c80",
+            "Name": "synapses",
+            "RepoUUID": "db6dc3469669439ba71a206a74a2553a",
+            "Compression": "LZ4 compression, level -1",
+            "Checksum": "No checksum",
+            "Syncs": ["segmentation"],
+            "Versioned": true,
+            "KVStore": "badger @ /data1/dbs/fishprod/annotations",
+            "LogStore": "write logs @ /optane/dbs/fishprod/mutlogs",
+            "Tags": {
+                "neuroglancer-properties": "[{\"id\": \"num_voxels_pre\", \"type\": \"int32\"}, {\"id\": \"num_voxels_post\", \"type\": \"int32\"}, {\"id\": \"conf_pre\", \"type\": \"float32\"}, {\"id\": \"conf_post\", \"type\": \"float32\"}, {\"id\": \"semantic_pre\", \"type\": \"uint8\", \"enum_values\": [0, 1, 2, 3], \"enum_labels\": [\"axon\", \"dendrite\", \"glia\", \"extracellular\"]}, {\"id\": \"semantic_post\", \"type\": \"uint8\", \"enum_values\": [0, 1, 2, 3], \"enum_labels\": [\"axon\", \"dendrite\", \"glia\", \"extracellular\"]}]",
+                "neuroglancer-relationships": "[{\"key\": \"by_rel_body_pre\", \"id\": \"body_pre\"}, {\"key\": \"by_rel_body_post\", \"id\": \"body_post\"}, {\"key\": \"by_rel_cc_pre\", \"id\": \"cc_pre\"}, {\"key\": \"by_rel_cc_post\", \"id\": \"cc_post\"}]"
+            }
+        },
+        "Extended": {
+            "VoxelSize": [100, 100, 100],
+            "VoxelUnits": ["nanometers", "nanometers", "nanometers"],
+            "MinPoint": [0, 0, 0],
+            "MaxPoint": [1000, 1000, 1000]
+        }
+    }
+
+With that in place, you can add the layer to neuroglancer via a layer source url such as this one:
+
+    precomputed://https://your.ngsupport-deployment-domain.com/synapse_annotations/your-dvid-server.your-domain.org/abc123:master/synapses/point
+
+Or, for line annotations between pre- and post-synaptic partners, replace the suffix 'point' with 'line'.
+
+Serving line annotations for partners is slower because it requires fetching
+the partner annotations for each synapse and then fetching the partner body IDs.
+"""
 import json
 import logging
 import tempfile
