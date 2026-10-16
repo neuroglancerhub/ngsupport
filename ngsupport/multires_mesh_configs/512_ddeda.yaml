@@ -1,0 +1,41 @@
+# Config for the /multires-mesh endpoints (see ngsupport/multires_mesh.py).
+#
+# These are the same 'body-meshes' and 'chunk-meshes' settings used by
+# neuclease.misc.bodymesh (and the flyemflows 'chunkedbodymeshes' workflow).
+# Chunk meshes and body meshes are stored in DVID's '<segmentation>_multires_*' instances.
+# A complete chunkedbodymeshes workflow config would also be accepted here.
+#
+# Neuroglancer source:
+#   precomputed://https://<ngsupport-host>/multires-mesh/<dvid-server>/<uuid>/<segmentation>/512_ddeda
+
+body-meshes:
+  # Must be 'concatenated-chunks-{chunk-meshes.config-name}-{quality-configs[i].name}'
+  source-method: concatenated-chunks-512_ddeda-sc1_halo2_cl8_filled_sm3_dec005
+
+  # Must be neuroglancer-multi-res for the multires-mesh service.
+  format: neuroglancer-multi-res
+  vertex-quantization-bits: 16
+  num-lods: 1
+
+  smoothing: 0
+  small-body-overall-decimation-s0: 0.01
+  large-body-overall-decimation-s0: 0.001
+  small-body-cutoff-vertices-s0: 10e6
+  large-body-cutoff-vertices-s0: 100e6
+
+chunk-meshes:
+  # Chunks whose surface_mutid is unset are assumed to be up-to-date
+  # with this UUID (see neuclease.misc.bodymesh.MeshChunkConfigSchema).
+  base-uuid: ddeda82d31c94dfca506db671b03a4bf
+
+  # Our version of the fish uses 16nm voxels.
+  chunk-shape-s0: [512, 512, 512]
+  config-name: 512_ddeda
+  chunk-halo: 2
+  quality-configs:
+    - name: sc1_halo2_cl8_filled_sm3_dec005
+      source-scale: 1
+      morphological-closing-s0: 8
+      fill-holes: True
+      smoothing: 3
+      decimation-s0: 0.005

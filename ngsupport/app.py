@@ -68,6 +68,24 @@ def _svmesh_ngmesh(server, uuid, instance, segment_type, segment_id):
     return svmesh_ngmesh(server, uuid, instance, segment_type, segment_id)
 
 
+@app.route('/multires-mesh/<server>/<uuid>/<instance>/<config>/info')
+def _multires_mesh_info(server, uuid, instance, config):
+    from ngsupport.multires_mesh import multires_mesh_info
+    return multires_mesh_info(server, uuid, instance, config)
+
+
+@app.route('/multires-mesh/<server>/<uuid>/<instance>/<config>/<int:body>.index')
+def _multires_mesh_index(server, uuid, instance, config, body):
+    from ngsupport.multires_mesh import multires_mesh_index
+    return multires_mesh_index(server, uuid, instance, config, body)
+
+
+@app.route('/multires-mesh/<server>/<uuid>/<instance>/<config>/<int:body>')
+def _multires_mesh_data(server, uuid, instance, config, body):
+    from ngsupport.multires_mesh import multires_mesh_data
+    return multires_mesh_data(server, uuid, instance, config, body)
+
+
 @app.route('/block-mesh', methods=['POST'])
 def _block_mesh():
     from ngsupport.small_mesh import gen_block_mesh
