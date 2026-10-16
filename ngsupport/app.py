@@ -1,27 +1,11 @@
-import sys
 import logging
 
 from flask import Flask
 from flask_cors import CORS
 from flask_compress import Compress
 
-
-def configure_default_logging():
-    """
-    Simple logging configuration.
-    Useful for interactive terminal sessions.
-    """
-    formatter = logging.Formatter('[%(asctime)s] %(levelname)s %(message)s')
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(formatter)
-
-    root_logger = logging.getLogger()
-    root_logger.handlers = []
-    root_logger.addHandler(handler)
-    root_logger.setLevel(logging.INFO)
-
-    logging.captureWarnings(True)
-
+# Note: neuclease's log formatter redacts DVID admin tokens from the log.
+from neuclease import configure_default_logging
 
 configure_default_logging()
 logger = logging.getLogger(__name__)

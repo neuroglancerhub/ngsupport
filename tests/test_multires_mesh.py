@@ -9,6 +9,7 @@ body (label 1) shaped like a sphere, spanning a 3x3x3 grid of 64-voxel chunks.
 import json
 import time
 import threading
+from functools import partial
 from http import HTTPStatus
 from concurrent.futures import ThreadPoolExecutor
 
@@ -465,3 +466,28 @@ def test_body_mesh_not_stored_if_another_process_finished_it(service):
     assert dvid.sparsevol_requests == 27
     assert ('segmentation_multires_meshes', '1') not in dvid.posted_keys
     assert ('segmentation_multires_meshes', '1.index') not in dvid.posted_keys
+
+
+def test_dvid_errors_are_reported_without_admintoken(service, monkeypatch):
+    """
+    If DVID can't be reached, the error response explains why (e.g. a timeout),
+    but doesn't reveal the admin token from the DVID URL.
+    """
+    from neuclease.dvid._dvid import dvid_api_wrapper
+    from neuclease.misc import bodymesh
+    client, _dvid = service
+
+    @dvid_api_wrapper
+    def fetch_lastmod(server, uuid, instance, body, *, session=None):
+        url = f'{server}/api/node/{uuid}/{instance}/lastmod/{body}?u=me&admintoken=SECRET'
+        raise requests.ConnectTimeout(
+            f"Max retries exceeded with url: {url} (Caused by ConnectTimeoutError())",
+            request=requests.Request('GET', url).prepare())
+
+    monkeypatch.setattr(bodymesh, 'fetch_lastmod', partial(fetch_lastmod, session=object()))
+    r = client.get(f'{SOURCE}/1.index')
+    assert r.status_code == HTTPStatus.BAD_GATEWAY
+    assert b'ConnectTimeout' in r.data
+    assert b'Max retries exceeded' in r.data
+    assert b'admintoken=<redacted>' in r.data
+    assert b'SECRET' not in r.data

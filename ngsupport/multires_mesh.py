@@ -63,6 +63,10 @@ Other settings
   to DVID.  That is needed to store meshes in a locked (committed) DVID node.
 - If the body mesh can't be updated (e.g. the node is locked and no token is set),
   the stored mesh is served anyway, if there is one.
+- DVID requests use long timeouts (NGSUPPORT_DVID_TIMEOUT seconds, default: 600),
+  since DVID may be slow to respond while it serves many chunk requests at once.
+- Progress is logged at INFO level.  Set NGSUPPORT_MULTIRES_DEBUG_LOGGING=1 to also log
+  the timing of every chunk.
 - Concurrent manifest requests for the same body are serialized on each host.
   Requests handled by different hosts may update the same body at the same time;
   to limit the redundant work, each one generates the body's missing chunks in random
@@ -87,6 +91,8 @@ from http import HTTPStatus
 from flask import Response, jsonify, redirect, request
 from requests import HTTPError, RequestException
 
+from neuclease import redact_admintoken
+
 from .util import normalize_server
 
 logger = logging.getLogger(__name__)
@@ -101,6 +107,8 @@ LOCK_DIR = os.environ.get(
 )
 PROCESSES = int(os.environ.get('NGSUPPORT_PROCESS_POOL', 4))
 REDIRECT_FRAGMENTS = os.environ.get('NGSUPPORT_MULTIRES_REDIRECT_FRAGMENTS', '').lower() in ('1', 'true', 'yes')
+DEBUG_LOGGING = os.environ.get('NGSUPPORT_MULTIRES_DEBUG_LOGGING', '').lower() in ('1', 'true', 'yes')
+DVID_TIMEOUT = float(os.environ.get('NGSUPPORT_DVID_TIMEOUT', 600.0))
 
 # How long a resolved UUID can be reused by fragment requests (see _resolve_uuid()).
 UUID_CACHE_SECONDS = 60
@@ -142,11 +150,35 @@ def _error_responses(f):
             # DVID returns 400 for an unknown instance and 404 for an unknown body.
             status = ex.response.status_code if ex.response is not None else None
             if status in (HTTPStatus.BAD_REQUEST, HTTPStatus.NOT_FOUND):
-                return Response(f"Not found in DVID: {ex}", HTTPStatus.NOT_FOUND, mimetype='text/plain')
-            return Response(f"Error from DVID: {ex}", HTTPStatus.BAD_GATEWAY, mimetype='text/plain')
+                return _error_response(f"Not found in DVID: {ex}", HTTPStatus.NOT_FOUND)
+            return _error_response(f"Error from DVID: {ex}", HTTPStatus.BAD_GATEWAY)
         except RequestException as ex:
-            return Response(f"Error accessing DVID: {ex}", HTTPStatus.BAD_GATEWAY, mimetype='text/plain')
+            return _error_response(f"Error accessing DVID ({type(ex).__name__}): {ex}", HTTPStatus.BAD_GATEWAY)
     return wrapper
+
+
+def _error_response(msg, status):
+    # DVID URLs may contain the admin token, which must not be sent to the client.
+    return Response(redact_admintoken(msg), status, mimetype='text/plain')
+
+
+@functools.cache
+def _configure_dvid_access():
+    """
+    Configure the DVID sessions (and logging) of this process.  (Called once.)
+    """
+    from neuclease.dvid import set_default_dvid_session_timeout
+    from neuclease.util import tqdm_proxy_config
+
+    # By default, neuclease gives up if DVID doesn't accept a connection
+    # within a few seconds, which can happen while it's busy serving our chunk requests.
+    set_default_dvid_session_timeout(DVID_TIMEOUT, DVID_TIMEOUT)
+
+    # Always report the progress of chunk generation in the log
+    # (even when running in a terminal).
+    tqdm_proxy_config['output_file'] = 'logger'
+    if DEBUG_LOGGING:
+        logging.getLogger('neuclease.misc.bodymesh').setLevel(logging.DEBUG)
 
 
 @_error_responses
@@ -179,8 +211,21 @@ def multires_mesh_index(server, uuid, seg_instance, config_name, body):
     Return a body's multires manifest (the '<body>.index' file),
     after bringing the body's stored mesh up to date.
     """
+    start = time.time()
+    logger.info(f"Body {body}: Manifest requested ({server} {uuid} {seg_instance} {config_name})")
+    try:
+        response = _multires_mesh_index(server, uuid, seg_instance, config_name, body)
+    except BaseException as ex:
+        logger.info(f"Body {body}: Manifest request failed after {time.time() - start:.1f}s ({type(ex).__name__})")
+        raise
+    logger.info(f"Body {body}: Manifest request finished after {time.time() - start:.1f}s")
+    return response
+
+
+def _multires_mesh_index(server, uuid, seg_instance, config_name, body):
     from neuclease.misc.bodymesh import update_body_mesh, mesh_instance_names
 
+    _configure_dvid_access()
     config = _load_config(config_name)
     uuid = _resolve_uuid(server, uuid, fresh=True)
     mesh_instance = mesh_instance_names(seg_instance, multires=True).body
@@ -195,7 +240,8 @@ def multires_mesh_index(server, uuid, seg_instance, config_name, body):
                              processes=PROCESSES, expect_concurrent_updates=True)
         except RequestException as ex:
             # Fall back to whatever mesh is already stored (if any).
-            logger.warning(f"Body {body}: Could not update the stored mesh: {ex}")
+            # (The log formatter redacts the admin token, if any.)
+            logger.warning(f"Body {body}: Could not update the stored mesh ({type(ex).__name__}): {ex}", exc_info=True)
             update_error = ex
 
     index = _fetch_value(server, uuid, mesh_instance, f'{body}.index')
@@ -203,6 +249,8 @@ def multires_mesh_index(server, uuid, seg_instance, config_name, body):
         raise update_error
     if not index:
         raise NotFound(f"Body {body} has no mesh geometry")
+    if update_error is not None:
+        logger.warning(f"Body {body}: Serving the previously stored mesh")
     return Response(index, HTTPStatus.OK, mimetype=OCTET_STREAM, headers=NO_STORE_HEADERS)
 
 
@@ -274,7 +322,14 @@ def _body_lock(server, uuid, seg_instance, body):
     stripe = int(hashlib.sha256(key.encode()).hexdigest(), 16) % LOCK_STRIPES
     os.makedirs(LOCK_DIR, exist_ok=True)
     with open(os.path.join(LOCK_DIR, f'{stripe}.lock'), 'a') as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            logger.info(f"Body {body}: Waiting for another request on this host to finish updating "
+                        f"this body (or another body that shares lock stripe {stripe})")
+            start = time.time()
+            fcntl.flock(f, fcntl.LOCK_EX)
+            logger.info(f"Body {body}: Acquired the body lock after waiting {time.time() - start:.1f}s")
         try:
             yield
         finally:
