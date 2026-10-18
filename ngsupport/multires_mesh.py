@@ -30,6 +30,7 @@ Relative to that source URL, the endpoints are:
     info            The mesh source metadata.
     <body>.index    The body's manifest.  Updates the body's stored mesh first, if necessary.
     <body>          The body's fragment data, fetched via HTTP Range requests.
+    <body>/chunk    (POST) Generate and store one chunk mesh.  Used internally (see below).
 
 The <uuid> may be any DVID ref accepted by neuclease's resolve_ref(), e.g. 'f3969:master'.
 
@@ -54,11 +55,26 @@ to fetch fragments directly from DVID, which avoids sending the mesh data throug
 service.  That requires DVID to be readable by the client without credentials, to
 support Range requests on keyvalue GETs, and to send CORS headers.
 
+Chunk workers
+-------------
+By default, a body's missing chunk meshes are generated in parallel using a pool of
+NGSUPPORT_PROCESS_POOL processes (default: 4) within the instance handling the request.
+Alternatively, set NGSUPPORT_MULTIRES_CHUNK_WORKERS to N to send them to a separate
+deployment of this service (NGSUPPORT_SERVICE_WORKER_BASE, as for /small-mesh),
+with up to N concurrent requests per body.  Each request is handled by the
+'<body>/chunk' endpoint, which generates and stores one chunk mesh in DVID.
+
+- The worker deployment must be separate from the one which handles neuroglancer's
+  requests.  Otherwise, all of the service's request threads could end up waiting for
+  chunk requests that can't be handled (a deadlock).
+- The worker deployment needs the same configs (it rejects requests from a service whose
+  config differs from its own), and a DVID_ADMIN_TOKEN, if one is needed to store meshes.
+- Failed chunk requests are retried a few times (e.g. while Cloud Run scales up).
+
 Other settings
 --------------
 - Bringing a large body's mesh up to date can take a while; make sure the service's
-  request timeout allows for it.  Chunk meshes are generated in parallel using a pool
-  of NGSUPPORT_PROCESS_POOL processes (default: 4).
+  request timeout allows for it.
 - DVID access uses neuclease's default sessions, which pass DVID_ADMIN_TOKEN (if set)
   to DVID.  That is needed to store meshes in a locked (committed) DVID node.
 - If the body mesh can't be updated (e.g. the node is locked and no token is set),
@@ -88,8 +104,11 @@ from collections import namedtuple
 from contextlib import contextmanager
 from http import HTTPStatus
 
+import requests
 from flask import Response, jsonify, redirect, request
 from requests import HTTPError, RequestException
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from neuclease import redact_admintoken
 
@@ -109,6 +128,14 @@ PROCESSES = int(os.environ.get('NGSUPPORT_PROCESS_POOL', 4))
 REDIRECT_FRAGMENTS = os.environ.get('NGSUPPORT_MULTIRES_REDIRECT_FRAGMENTS', '').lower() in ('1', 'true', 'yes')
 DEBUG_LOGGING = os.environ.get('NGSUPPORT_MULTIRES_DEBUG_LOGGING', '').lower() in ('1', 'true', 'yes')
 DVID_TIMEOUT = float(os.environ.get('NGSUPPORT_DVID_TIMEOUT', 600.0))
+CHUNK_WORKERS = int(os.environ.get('NGSUPPORT_MULTIRES_CHUNK_WORKERS', 0))
+
+# A separate deployment of this service, to which chunk requests are sent (if CHUNK_WORKERS).
+# (The same setting is used by small_mesh.py.)
+WORKER_BASE = os.environ.get('NGSUPPORT_SERVICE_WORKER_BASE', 'https://ngsupport-worker-bmcp5imp6q-uk.a.run.app')
+
+# Timeouts (connect, read) for chunk requests sent to the worker service.
+CHUNK_REQUEST_TIMEOUT = (30.0, 900.0)
 
 # How long a resolved UUID can be reused by fragment requests (see _resolve_uuid()).
 UUID_CACHE_SECONDS = 60
@@ -134,6 +161,10 @@ class NotFound(Exception):
     pass
 
 
+class ChunkWorkerError(HTTPError):
+    """A chunk request sent to the worker service failed."""
+
+
 def _error_responses(f):
     """
     Convert the errors we expect into HTTP responses that neuroglancer handles
@@ -146,6 +177,8 @@ def _error_responses(f):
             return f(*args, **kwargs)
         except (ConfigError, NotFound) as ex:
             return Response(str(ex), HTTPStatus.NOT_FOUND, mimetype='text/plain')
+        except ChunkWorkerError as ex:
+            return _error_response(str(ex), HTTPStatus.BAD_GATEWAY)
         except HTTPError as ex:
             # DVID returns 400 for an unknown instance and 404 for an unknown body.
             status = ex.response.status_code if ex.response is not None else None
@@ -230,6 +263,11 @@ def _multires_mesh_index(server, uuid, seg_instance, config_name, body):
     uuid = _resolve_uuid(server, uuid, fresh=True)
     mesh_instance = mesh_instance_names(seg_instance, multires=True).body
 
+    chunk_fn = None
+    if CHUNK_WORKERS:
+        chunk_fn = functools.partial(_request_chunk_mesh, server, uuid, seg_instance,
+                                     config_name, _config_digest(config), body)
+
     update_error = None
     with _body_lock(server, uuid, seg_instance, body):
         try:
@@ -237,7 +275,8 @@ def _multires_mesh_index(server, uuid, seg_instance, config_name, body):
             # Other service instances may be updating the same body at the same time.
             update_body_mesh(server, uuid, seg_instance, body,
                              copy.deepcopy(config.body), copy.deepcopy(config.chunk),
-                             processes=PROCESSES, expect_concurrent_updates=True)
+                             processes=PROCESSES, expect_concurrent_updates=True,
+                             chunk_fn=chunk_fn, chunk_fn_threads=CHUNK_WORKERS)
         except RequestException as ex:
             # Fall back to whatever mesh is already stored (if any).
             # (The log formatter redacts the admin token, if any.)
@@ -252,6 +291,95 @@ def _multires_mesh_index(server, uuid, seg_instance, config_name, body):
     if update_error is not None:
         logger.warning(f"Body {body}: Serving the previously stored mesh")
     return Response(index, HTTPStatus.OK, mimetype=OCTET_STREAM, headers=NO_STORE_HEADERS)
+
+
+@_error_responses
+@normalize_server
+def multires_mesh_chunk(server, uuid, seg_instance, config_name, body):
+    """
+    Generate (and store in DVID) a single chunk mesh for a body, and return it.
+    This is how a service instance which is updating a body mesh distributes
+    the work of generating its chunks (see _request_chunk_mesh()).
+
+    The request body is JSON:
+
+        {"chunk": [z, y, x, surface_mutid, block_hash], "config-digest": "..."}
+
+    The response is the chunk's (draco) mesh fragment, possibly empty.
+    """
+    from neuclease.misc.bodymesh import mesh_for_chunk, quality_from_source_method, DummyResourceMgr
+
+    _configure_dvid_access()
+    config = _load_config(config_name)
+    uuid = _resolve_uuid(server, uuid)
+
+    payload = request.get_json(silent=True) or {}
+    try:
+        z, y, x, surface_mutid, block_hash = payload['chunk']
+        chunk_spec = (int(z), int(y), int(x), int(surface_mutid), str(block_hash))
+    except (KeyError, TypeError, ValueError):
+        return _error_response("Expected JSON with a 'chunk' list: [z, y, x, surface_mutid, block_hash]",
+                               HTTPStatus.BAD_REQUEST)
+
+    if payload.get('config-digest') != _config_digest(config):
+        msg = (f"Config '{config_name}' differs between the requesting service "
+               "and this one.  Deploy the same configs to both.")
+        return _error_response(msg, HTTPStatus.CONFLICT)
+
+    quality = quality_from_source_method(config.body, config.chunk)
+    fragment = mesh_for_chunk(
+        server, uuid, seg_instance, body, copy.deepcopy(config.chunk), quality,
+        True, DummyResourceMgr(), True, config.body['vertex-quantization-bits'], True,
+        chunk_spec
+    )
+    return Response(fragment, HTTPStatus.OK, mimetype=OCTET_STREAM)
+
+
+def _request_chunk_mesh(server, uuid, seg_instance, config_name, config_digest, body, chunk_spec):
+    """
+    Generate (and store) a chunk mesh by sending a request to the worker service.
+    Used as the chunk_fn for update_body_mesh().  Returns the chunk's mesh fragment.
+    """
+    # The worker URL must express the server the way our routes expect it (see normalize_server()).
+    server_path = server.replace('://', '-', 1)
+    url = f'{WORKER_BASE}/multires-mesh/{server_path}/{uuid}/{seg_instance}/{config_name}/{body}/chunk'
+    payload = {'chunk': list(chunk_spec), 'config-digest': config_digest}
+    status, content = _post_chunk_request(url, payload)
+    if status != HTTPStatus.OK:
+        msg = content[:1000].decode('utf-8', errors='replace')
+        z, y, x, *_ = chunk_spec
+        r = requests.Response()
+        r.status_code = status
+        raise ChunkWorkerError(f"Chunk worker failed for chunk {x},{y},{z} ({status}): {msg}", response=r)
+    return content
+
+
+def _post_chunk_request(url, payload):
+    """Send a chunk request to the worker service.  Returns (status, content)."""
+    r = _chunk_worker_session().post(url, json=payload, timeout=CHUNK_REQUEST_TIMEOUT)
+    return r.status_code, r.content
+
+
+_chunk_worker_sessions = threading.local()
+
+
+def _chunk_worker_session():
+    """
+    A (per-thread) session for chunk requests, which retries failed requests,
+    e.g. 429 (Too Many Requests) while Cloud Run scales up the worker service.
+    (Retrying is harmless, since a chunk request just stores the same chunk again,
+    or finds that it has been stored already.)
+    """
+    try:
+        return _chunk_worker_sessions.session
+    except AttributeError:
+        retry = Retry(total=6, backoff_factor=1.0, allowed_methods=None, raise_on_status=False,
+                      status_forcelist=(429, 500, 502, 503, 504))
+        session = requests.Session()
+        session.mount('http://', HTTPAdapter(max_retries=retry))
+        session.mount('https://', HTTPAdapter(max_retries=retry))
+        _chunk_worker_sessions.session = session
+        return session
 
 
 @_error_responses
@@ -341,6 +469,12 @@ def _body_lock(server, uuid, seg_instance, body):
 #
 
 MeshConfig = namedtuple('MeshConfig', 'body chunk')
+
+
+def _config_digest(config):
+    """A digest of a (validated) config's settings, to check that two services agree on them."""
+    settings = json.dumps([config.body, config.chunk], sort_keys=True)
+    return hashlib.sha256(settings.encode()).hexdigest()[:16]
 
 # Config names become file names, so don't permit anything path-like.
 _CONFIG_NAME_PATTERN = re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.-]*')

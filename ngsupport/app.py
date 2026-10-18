@@ -70,6 +70,12 @@ def _multires_mesh_data(server, uuid, instance, config, body):
     return multires_mesh_data(server, uuid, instance, config, body)
 
 
+@app.route('/multires-mesh/<server>/<uuid>/<instance>/<config>/<int:body>/chunk', methods=['POST'])
+def _multires_mesh_chunk(server, uuid, instance, config, body):
+    from ngsupport.multires_mesh import multires_mesh_chunk
+    return multires_mesh_chunk(server, uuid, instance, config, body)
+
+
 @app.route('/block-mesh', methods=['POST'])
 def _block_mesh():
     from ngsupport.small_mesh import gen_block_mesh

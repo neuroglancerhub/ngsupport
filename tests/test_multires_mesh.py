@@ -491,3 +491,72 @@ def test_dvid_errors_are_reported_without_admintoken(service, monkeypatch):
     assert b'Max retries exceeded' in r.data
     assert b'admintoken=<redacted>' in r.data
     assert b'SECRET' not in r.data
+
+
+@pytest.fixture
+def chunk_workers(service, monkeypatch):
+    """
+    Send chunk requests to the 'worker service' (which, here, is just the same test app).
+    Returns the list of chunk request URLs.
+    """
+    from ngsupport import multires_mesh
+    client, _dvid = service
+    urls = []
+    lock = threading.Lock()
+
+    def post_chunk_request(url, payload):
+        with lock:
+            urls.append(url)
+        assert url.startswith('https://worker')
+        r = client.post(url[len('https://worker'):], json=payload)
+        return r.status_code, r.data
+
+    monkeypatch.setattr(multires_mesh, 'CHUNK_WORKERS', 3)
+    monkeypatch.setattr(multires_mesh, 'WORKER_BASE', 'https://worker')
+    monkeypatch.setattr(multires_mesh, '_post_chunk_request', post_chunk_request)
+    return urls
+
+
+def test_chunks_generated_by_workers(service, chunk_workers):
+    client, dvid = service
+    r = client.get(f'{SOURCE}/1.index')
+    assert r.status_code == 200, r.data
+
+    # Each chunk was requested from the workers (with the resolved UUID), and stored by them.
+    assert len(chunk_workers) == 27
+    assert all(u.startswith(f'https://worker/multires-mesh/https-fake-dvid/{RESOLVED_UUID}/segmentation/test/1/chunk')
+               for u in chunk_workers)
+    assert dvid.sparsevol_requests == 27
+    assert len([k for (i, k) in dvid.kv if i == 'segmentation_multires_chunk_meshes']) == 27
+
+    num_lods, fragments = _parse_manifest(r.data)
+    positions = {p for (_, p, _, size) in fragments if size}
+    assert positions == {(x, y, z) for x in range(3) for y in range(3) for z in range(3)} - {(1, 1, 1)}
+    _fetch_all_fragments(client, fragments)
+
+    # After an edit, only the affected chunk is requested again.
+    dvid.edit_chunk([0, 0, 0])
+    assert client.get(f'{SOURCE}/1.index').status_code == 200
+    assert len(chunk_workers) == 28
+
+
+def test_chunk_worker_rejects_mismatched_config(service, chunk_workers, monkeypatch):
+    """If the worker's config differs from the requesting service's config, it does nothing."""
+    from ngsupport import multires_mesh
+    client, dvid = service
+
+    post = multires_mesh._post_chunk_request
+    monkeypatch.setattr(multires_mesh, '_post_chunk_request',
+                        lambda url, payload: post(url, {**payload, 'config-digest': 'something-else'}))
+
+    r = client.get(f'{SOURCE}/1.index')
+    assert r.status_code == HTTPStatus.BAD_GATEWAY
+    assert b'differs between the requesting service' in r.data
+    assert dvid.sparsevol_requests == 0
+
+
+def test_chunk_endpoint_rejects_bad_requests(service):
+    client, _ = service
+    url = f'/multires-mesh/fake-dvid/{RESOLVED_UUID}/segmentation/test/1/chunk'
+    assert client.post(url, json={'chunk': [0, 0]}).status_code == HTTPStatus.BAD_REQUEST
+    assert client.post(url, data=b'garbage').status_code == HTTPStatus.BAD_REQUEST
