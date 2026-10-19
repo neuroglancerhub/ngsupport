@@ -2,7 +2,8 @@
 #
 # These are the same 'body-meshes' and 'chunk-meshes' settings used by
 # neuclease.misc.bodymesh (and the flyemflows 'chunkedbodymeshes' workflow).
-# Chunk meshes and body meshes are stored in DVID's '<segmentation>_multires_*' instances.
+# By default, chunk meshes and body meshes are stored in DVID's '<segmentation>_multires_*'
+# instances, but they can be stored in a Google Cloud Storage bucket instead (see 'storage').
 # A complete chunkedbodymeshes workflow config would also be accepted here.
 #
 # Neuroglancer source:
@@ -23,6 +24,13 @@ body-meshes:
   small-body-cutoff-vertices-s0: 10e6
   large-body-cutoff-vertices-s0: 100e6
 
+  # Where to store body meshes: 'dvid' (the default) or a bucket URL.
+  # In a bucket, the newest mesh of each body on the 'live-ref' branch is stored as
+  # '<body>' (a standard precomputed mesh source), and other UUIDs' meshes as '<body>-<uuid>'.
+  # (The bucket must be publicly readable, with CORS enabled; see ngsupport/multires_mesh.py.)
+  # storage: gs://my-bucket/yakuba/segmentation/body-meshes
+  # live-ref: master
+
 chunk-meshes:
   # Chunks whose surface_mutid is unset are assumed to be up-to-date
   # with this UUID (see neuclease.misc.bodymesh.MeshChunkConfigSchema).
@@ -32,6 +40,10 @@ chunk-meshes:
   chunk-shape-s0: [512, 512, 512]
   config-name: 512_ddeda
   chunk-halo: 2
+
+  # Where to store chunk meshes: 'dvid' (the default) or a bucket URL.
+  # storage: gs://my-bucket/yakuba/segmentation/chunk-meshes
+
   quality-configs:
     - name: sc1_halo2_cl8_filled_sm3_dec005
       source-scale: 1

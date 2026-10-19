@@ -12,7 +12,10 @@ exactly as the flyemflows 'chunkedbodymeshes' workflow does:
   instance, and the body mesh is reassembled from them and stored in
   '<segmentation>_multires_meshes'.  If the stored body mesh is already up-to-date,
   nothing is regenerated.
-- The manifest and fragment data are then served from '<segmentation>_multires_meshes'.
+- The manifest and fragment data are then served from '<segmentation>_multires_meshes',
+  or from an object store (e.g. a Google Cloud Storage bucket), if the config says so
+  (see 'storage' in neuclease.misc.bodymesh.BodyMeshParametersSchema).  In that case,
+  the chunk meshes may be stored there, too.
 
 The DVID mesh instances must already exist (see bodymesh.init_mesh_instances(..., multires=True)),
 and the service must be able to write to them (see DVID_ADMIN_TOKEN, below).
@@ -49,7 +52,10 @@ must be chunk-based ('concatenated-chunks-...').
 
 Fragment data
 -------------
-By default, fragment requests are proxied to DVID (forwarding the Range header).
+If the body meshes are stored in a (public) bucket, fragment requests are redirected to it.
+(The bucket must send CORS headers; see below.)
+
+Otherwise, fragment requests are proxied to DVID (forwarding the Range header), by default.
 Alternatively, set NGSUPPORT_MULTIRES_REDIRECT_FRAGMENTS=1 to redirect neuroglancer
 to fetch fragments directly from DVID, which avoids sending the mesh data through this
 service.  That requires DVID to be readable by the client without credentials, to
@@ -70,6 +76,20 @@ with up to N concurrent requests per body.  Each request is handled by the
 - The worker deployment needs the same configs (it rejects requests from a service whose
   config differs from its own), and a DVID_ADMIN_TOKEN, if one is needed to store meshes.
 - Failed chunk requests are retried a few times (e.g. while Cloud Run scales up).
+
+Buckets
+-------
+For body meshes stored in a Google Cloud Storage bucket, the bucket must be publicly
+readable, and it must permit CORS requests from any origin, since neuroglancer is
+redirected to it.  (After a cross-origin redirect, the browser sends 'Origin: null'.)
+For example (with gcloud storage buckets update gs://<bucket> --cors-file=cors.json):
+
+    [{"origin": ["*"], "method": ["GET", "HEAD"], "maxAgeSeconds": 3600,
+      "responseHeader": ["Content-Type", "Content-Range", "Content-Length", "Accept-Ranges"]}]
+
+The service (and its chunk workers) must be able to write to the bucket, via the
+service account's credentials.  Consider disabling the bucket's "soft delete" policy,
+since overwritten mesh files would otherwise be retained (and billed) for a week.
 
 Other settings
 --------------
@@ -256,12 +276,11 @@ def multires_mesh_index(server, uuid, seg_instance, config_name, body):
 
 
 def _multires_mesh_index(server, uuid, seg_instance, config_name, body):
-    from neuclease.misc.bodymesh import update_body_mesh, mesh_instance_names
+    from neuclease.misc.bodymesh import update_body_mesh
 
     _configure_dvid_access()
     config = _load_config(config_name)
     uuid = _resolve_uuid(server, uuid, fresh=True)
-    mesh_instance = mesh_instance_names(seg_instance, multires=True).body
 
     chunk_fn = None
     if CHUNK_WORKERS:
@@ -283,7 +302,13 @@ def _multires_mesh_index(server, uuid, seg_instance, config_name, body):
             logger.warning(f"Body {body}: Could not update the stored mesh ({type(ex).__name__}): {ex}", exc_info=True)
             update_error = ex
 
-    index = _fetch_value(server, uuid, mesh_instance, f'{body}.index')
+    index = None
+    if location := _locate_body_mesh(server, uuid, seg_instance, body, fresh=True):
+        if location.store:
+            index = location.store.get(location.index_name)
+        else:
+            index = _fetch_value(server, uuid, location.mesh_instance, location.index_name)
+
     if index is None and update_error is not None:
         raise update_error
     if not index:
@@ -387,23 +412,28 @@ def _chunk_worker_session():
 def multires_mesh_data(server, uuid, seg_instance, config_name, body):
     """
     Return (a byte range of) a body's multires fragment data (the '<body>' file),
-    either by proxying the request to DVID or redirecting the client to DVID.
+    by redirecting the client to the object store containing it (if any),
+    or else by proxying the request to DVID or redirecting the client to DVID.
     """
-    from neuclease.misc.bodymesh import mesh_instance_names
-
     _load_config(config_name)
     uuid = _resolve_uuid(server, uuid)
-    mesh_instance = mesh_instance_names(seg_instance, multires=True).body
 
-    if REDIRECT_FRAGMENTS:
-        # Note: The redirect URL must not include DVID_ADMIN_TOKEN.
-        url = f'{server}/api/node/{uuid}/{mesh_instance}/key/{body}'
+    location = _locate_body_mesh(server, uuid, seg_instance, body)
+    if location is None:
+        raise NotFound(f"Body {body} has no stored mesh")
+
+    if location.store or REDIRECT_FRAGMENTS:
+        if location.store:
+            url = location.store.public_url(location.data_name)
+        else:
+            # Note: The redirect URL must not include DVID_ADMIN_TOKEN.
+            url = f'{server}/api/node/{uuid}/{location.mesh_instance}/key/{location.data_name}'
         r = redirect(url, HTTPStatus.TEMPORARY_REDIRECT)
         r.headers.update(NO_STORE_HEADERS)
         return r
 
     range_header = request.headers.get('Range')
-    result = _fetch_value_range(server, uuid, mesh_instance, f'{body}', range_header)
+    result = _fetch_value_range(server, uuid, location.mesh_instance, location.data_name, range_header)
     if result is None or (result.status == HTTPStatus.OK and not result.content):
         raise NotFound(f"Body {body} has no stored mesh")
 
@@ -561,6 +591,38 @@ def _resolve_uuid(server, uuid, fresh=False):
     with _resolved_uuids_lock:
         _resolved_uuids[(server, uuid)] = (now, resolved)
     return resolved
+
+
+_body_mesh_locations = {}
+_body_mesh_locations_lock = threading.Lock()
+
+
+def _locate_body_mesh(server, uuid, seg_instance, body, fresh=False):
+    """
+    Find a body's stored multires mesh (see bodymesh.locate_multires_body_mesh()).
+    Returns None if there is none, or a SimpleNamespace with attributes
+    store, index_name, data_name, mesh_info, and mesh_instance.
+
+    Manifest requests locate the mesh afresh (fresh=True).  Fragment requests
+    (which are numerous) reuse a recent result.
+    """
+    from neuclease.misc.bodymesh import locate_multires_body_mesh, mesh_instance_names
+
+    key = (server, uuid, seg_instance, int(body))
+    now = time.time()
+    if not fresh:
+        with _body_mesh_locations_lock:
+            cached = _body_mesh_locations.get(key)
+        if cached and now - cached[0] < UUID_CACHE_SECONDS:
+            return cached[1]
+
+    location = locate_multires_body_mesh(server, uuid, seg_instance, body)
+    if location is not None:
+        location.mesh_instance = mesh_instance_names(seg_instance, multires=True).body
+
+    with _body_mesh_locations_lock:
+        _body_mesh_locations[key] = (now, location)
+    return location
 
 
 @functools.cache

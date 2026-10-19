@@ -226,6 +226,7 @@ def service(monkeypatch, tmp_path):
     monkeypatch.setattr(multires_mesh, 'PROCESSES', 0)
     monkeypatch.setattr(multires_mesh, 'REDIRECT_FRAGMENTS', False)
     monkeypatch.setattr(multires_mesh, '_resolved_uuids', {})
+    monkeypatch.setattr(multires_mesh, '_body_mesh_locations', {})
     multires_mesh._voxel_size_xyz.cache_clear()
     multires_mesh._load_config_file.cache_clear()
 
@@ -456,9 +457,14 @@ def test_body_mesh_not_stored_if_another_process_finished_it(service):
     _client, dvid = service
     method = 'concatenated-chunks-test-q'
 
+    from neuclease.misc import bodymesh
+    from ngsupport import multires_mesh
+    settings = bodymesh._assembly_settings(multires_mesh._load_config('test').body)
+
     def another_process_finishes():
-        dvid.kv[('segmentation_multires_mesh_info', '1')] = \
-            json.dumps({'body': 1, 'lastmod': dvid.mutid, 'method': method}).encode()
+        mesh_info = {'body': 1, 'lastmod': dvid.mutid, 'method': method,
+                     'storage': 'dvid', 'assembly-settings': settings}
+        dvid.kv[('segmentation_multires_mesh_info', '1')] = json.dumps(mesh_info).encode()
 
     dvid.on_sparsevol = another_process_finishes
     _update_body_1(dvid)
@@ -560,3 +566,88 @@ def test_chunk_endpoint_rejects_bad_requests(service):
     url = f'/multires-mesh/fake-dvid/{RESOLVED_UUID}/segmentation/test/1/chunk'
     assert client.post(url, json={'chunk': [0, 0]}).status_code == HTTPStatus.BAD_REQUEST
     assert client.post(url, data=b'garbage').status_code == HTTPStatus.BAD_REQUEST
+
+
+@pytest.fixture
+def bucket_config(service, tmp_path):
+    """Store the chunk meshes and body meshes in an (in-memory) bucket instead of DVID."""
+    from neuclease.misc.meshstore import MemoryStore, open_store
+    MemoryStore.clear_all()
+    config = TEST_CONFIG.replace(
+        '    source-method: concatenated-chunks-test-q\n',
+        '    source-method: concatenated-chunks-test-q\n    storage: mem://bucket/bodies\n'
+    ).replace(
+        '    chunk-halo: 2\n',
+        '    chunk-halo: 2\n    storage: mem://bucket/chunks\n'
+    )
+    assert config.count('mem://') == 2
+    (tmp_path / 'configs' / 'test.yaml').write_text(config)
+    return open_store('mem://bucket/chunks'), open_store('mem://bucket/bodies')
+
+
+def test_meshes_stored_in_bucket(service, bucket_config):
+    client, dvid = service
+    chunk_store, body_store = bucket_config
+
+    r = client.get(f'{SOURCE}/1.index')
+    assert r.status_code == 200, r.data
+
+    # Chunks and body mesh are in the bucket, not DVID (except the mesh_info).
+    assert len(chunk_store.list('test-1-')) == 27
+    assert sorted(body_store.list('')) == ['1', '1.index', 'info']
+    assert body_store.get('1.index') == r.data
+    assert json.loads(body_store.get('info')) == client.get(f'{SOURCE}/info').get_json()
+    assert not [k for (i, k) in dvid.kv if i == 'segmentation_multires_chunk_meshes']
+    assert ('segmentation_multires_meshes', '1') not in dvid.kv
+    mesh_info = json.loads(dvid.kv[('segmentation_multires_mesh_info', '1')])
+    assert mesh_info['storage'] == 'mem://bucket/bodies'
+    assert mesh_info['written-uuid'] == RESOLVED_UUID
+    assert body_store.stat('1').metadata == {'uuid': RESOLVED_UUID, 'lastmod': '10'}
+
+    # Fragment requests are redirected to the bucket.
+    f = client.get(f'{SOURCE}/1', headers={'Range': 'bytes=0-99'})
+    assert f.status_code == HTTPStatus.TEMPORARY_REDIRECT
+    assert f.headers['Location'] == body_store.public_url('1')
+    assert f.headers['Cache-Control'] == 'no-store'
+
+    # The fragments are valid.
+    data = body_store.get('1')
+    _num_lods, fragments = _parse_manifest(r.data)
+    for _lod, _pos, offset, size in fragments:
+        if size:
+            assert len(DracoPy.decode(data[offset:offset + size]).faces) > 0
+
+    # After an edit, only the affected chunk is regenerated, and the
+    # body mesh is replaced in place (it's the same UUID).
+    dvid.edit_chunk([0, 0, 0])
+    r2 = client.get(f'{SOURCE}/1.index')
+    assert r2.status_code == 200
+    assert dvid.sparsevol_requests == 28
+    assert len(chunk_store.list('test-1-')) == 28
+    assert sorted(body_store.list('')) == ['1', '1.index', 'info']
+    assert body_store.stat('1').metadata['lastmod'] == str(dvid.mutid)
+
+
+def test_chunk_workers_store_chunks_in_bucket(service, chunk_workers, bucket_config):
+    client, dvid = service
+    chunk_store, body_store = bucket_config
+    assert client.get(f'{SOURCE}/1.index').status_code == 200
+    assert len(chunk_workers) == 27
+    assert len(chunk_store.list('test-1-')) == 27
+    assert body_store.get('1.index') is not None
+
+
+def test_changed_settings_regenerate_body_mesh(service, tmp_path):
+    """If the config's body mesh settings change, stored meshes are regenerated."""
+    client, dvid = service
+    first = client.get(f'{SOURCE}/1.index').data
+
+    config = TEST_CONFIG.replace('    smoothing: 0\n', '    smoothing: 0\n    num-lods: 2\n', 1)
+    (tmp_path / 'configs' / 'test.yaml').write_text(config)
+    r = client.get(f'{SOURCE}/1.index')
+    assert r.status_code == 200
+    assert r.data != first
+    assert _parse_manifest(r.data)[0] == 2
+
+    # The chunks were reused.
+    assert dvid.sparsevol_requests == 27
