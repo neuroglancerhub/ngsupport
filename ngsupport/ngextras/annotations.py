@@ -463,7 +463,7 @@ def _proptype(s):
                 return str(np.dtype(utype))
         raise RuntimeError(f"Column {s.name} has too many categories")
 
-    if s.dtype != object:
+    if s.dtype != object and not pd.api.types.is_string_dtype(s.dtype):
         raise RuntimeError(f"Unsupported property dtype: {s.dtype} for column {s.name}")
 
     is_str = s.map(lambda x: isinstance(x, str)).all()

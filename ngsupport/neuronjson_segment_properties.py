@@ -98,18 +98,17 @@ def _neuronjson_segment_properties_info(server, uuid, instance, label, altlabel)
 
 def convert_to_string(s):
     """
-    Convert a series to string, but if it's a float series, convert all values which
-    happen to be integers into actual ints first (to avoid strings like "123.0").
+    Convert a series to string (with missing values as ""), but if it's a float series,
+    convert all values which happen to be integers into actual ints first
+    (to avoid strings like "123.0").
     """
-    if s.dtype == object:
-        return s.fillna('').astype(str)
-    if np.issubdtype(s.dtype, np.integer):
-        return s.astype(str)
-    if np.issubdtype(s.dtype, np.floating):
+    # Note: Use pandas (not numpy) to inspect the dtype, since it may be
+    # a pandas extension dtype (e.g. the default string dtype in pandas 3).
+    if pd.api.types.is_float_dtype(s.dtype):
         s = s.astype(object)
         int_rows = s.notnull() & ~((s % 1).astype(bool))
         s.loc[int_rows] = s.loc[int_rows].astype(int)
-        return s.fillna('').astype(str)
+    return s.astype(object).fillna('').astype(str)
 
 
 @normalize_server
@@ -175,8 +174,9 @@ def neuronjson_segment_synapse_properties_info(server, uuid, instance, n):
     top_syn = top_tbar.to_frame().merge(top_psd, 'outer', on='body')
     missing_tbar = fetch_counts(server, uuid, instance, top_syn.loc[top_syn['PreSyn'].isnull()].index, 'PreSyn')
     missing_psd = fetch_counts(server, uuid, instance, top_syn.loc[top_syn['PostSyn'].isnull()].index, 'PostSyn')
-    top_syn['PreSyn'].update(missing_tbar)
-    top_syn['PostSyn'].update(missing_psd)
+    # (Note: With pandas copy-on-write, top_syn['PreSyn'].update(...) wouldn't modify top_syn.)
+    top_syn.loc[missing_tbar.index, 'PreSyn'] = missing_tbar
+    top_syn.loc[missing_psd.index, 'PostSyn'] = missing_psd
     top_syn = top_syn.astype(np.int32)
 
     info = segment_properties_json(top_syn)
@@ -313,6 +313,11 @@ def fetch_counts(server, uuid, instance, bodies, element_type, format='pandas'):
         If a Series is returned, it's indexed by body
     """
     bodies = np.array(bodies).tolist()
+    if not bodies:
+        if format == 'json':
+            return []
+        return pd.Series([], name=element_type, dtype=int).rename_axis('body')
+
     url = f'{server}/api/node/{uuid}/{instance}/counts/{element_type}'
     r = requests.get(url, json=bodies, params={'app': 'ngsupport'})
     r.raise_for_status()
