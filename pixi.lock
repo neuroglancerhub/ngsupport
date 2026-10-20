@@ -224,8 +224,8 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/zipp-4.1.1-pyh5ded981_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/zope.event-6.2-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/flyem-forge/noarch/confiddler-0.1.5-pyh8a5b993_0.tar.bz2
-      - conda: https://conda.anaconda.org/flyem-forge/noarch/neuclease-0.100.post0.dev2-0_gf73800d.conda
-      - conda: https://conda.anaconda.org/flyem-forge/noarch/vol2mesh-0.3.post3-0_g7dbf296.conda
+      - conda: https://conda.anaconda.org/flyem-forge/noarch/neuclease-0.100.post0.dev6-0_g263afa5.conda
+      - conda: https://conda.anaconda.org/flyem-forge/noarch/vol2mesh-0.3.post5-0_g1e978be.conda
       - pypi: https://files.pythonhosted.org/packages/1c/b1/1831dd8c9b06c013085d31a2ac4f03392d43bd36bfc6ff591a08bcedc1cf/ml_dtypes-0.6.0-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/33/a0/550eec327e5f5c7b732531c489f5307efec41f047b0d703bd4ca1e5ad2db/httplib2-0.32.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/38/bb/d215ee7c73b61497b28a5503f9f53523f294fcc936762b7caf90e0c1c2b5/pyparsing-3.3.3-py3-none-any.whl
@@ -436,8 +436,8 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/zope.interface-8.7-py314hd98292b_0.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/zstd-1.5.7-hf451053_7.conda
       - conda: https://conda.anaconda.org/flyem-forge/noarch/confiddler-0.1.5-pyh8a5b993_0.tar.bz2
-      - conda: https://conda.anaconda.org/flyem-forge/noarch/neuclease-0.100.post0.dev2-0_gf73800d.conda
-      - conda: https://conda.anaconda.org/flyem-forge/noarch/vol2mesh-0.3.post3-0_g7dbf296.conda
+      - conda: https://conda.anaconda.org/flyem-forge/noarch/neuclease-0.100.post0.dev6-0_g263afa5.conda
+      - conda: https://conda.anaconda.org/flyem-forge/noarch/vol2mesh-0.3.post5-0_g1e978be.conda
       - pypi: https://files.pythonhosted.org/packages/33/a0/550eec327e5f5c7b732531c489f5307efec41f047b0d703bd4ca1e5ad2db/httplib2-0.32.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/38/bb/d215ee7c73b61497b28a5503f9f53523f294fcc936762b7caf90e0c1c2b5/pyparsing-3.3.3-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/51/ac/e5d886f892666d2d1e5cb8c1a41146e1d79ae8896477b1153a21711d3b44/fasteners-0.20-py3-none-any.whl
@@ -5974,10 +5974,11 @@ packages:
   license: BSD-3-Clause
   size: 15331
   timestamp: 1723033360887
-- conda: https://conda.anaconda.org/flyem-forge/noarch/neuclease-0.100.post0.dev2-0_gf73800d.conda
+- conda: https://conda.anaconda.org/flyem-forge/noarch/neuclease-0.100.post0.dev6-0_g263afa5.conda
+  build_number: 0
   noarch: python
-  sha256: 7f5627c6f611873a7145ef90f4b36a32c577f79b91bb83424771db4b6d322fe9
-  md5: b626c52e7856844b105c2f703f0131f1
+  sha256: 75b755d8db2cd862575a55bc03086f8eb2b4c27bf281027cfca0702ea3371470
+  md5: 0951056a2554addd8cf81605f5c3c8f1
   depends:
   - asciitree
   - confiddler
@@ -6003,13 +6004,12 @@ packages:
   - vigra
   - zarr
   license: BSD (3-clause)
-  size: 478359
-  timestamp: 1792459167040
-- conda: https://conda.anaconda.org/flyem-forge/noarch/vol2mesh-0.3.post3-0_g7dbf296.conda
-  build_number: 0
+  size: 478075
+  timestamp: 1792525052834
+- conda: https://conda.anaconda.org/flyem-forge/noarch/vol2mesh-0.3.post5-0_g1e978be.conda
   noarch: python
-  sha256: 3253709cf446435198633f7ced79e2b1542bda630c34929befe696aae4ab7d03
-  md5: edaf666b6d7eb6d3521238523acdaddf
+  sha256: c4c2180178b5cd91340d824c3b39468b8bbc984ddbf0d5cf71e36f74c7aa1ca0
+  md5: 99a4c9192f33ba4b10f654d2c831296c
   depends:
   - dracopy
   - lz4 >=2
@@ -6024,8 +6024,8 @@ packages:
   - trimesh
   license: BSD-3-Clause
   license_family: BSD
-  size: 49758
-  timestamp: 1792459978571
+  size: 49732
+  timestamp: 1792525234522
 - pypi: https://files.pythonhosted.org/packages/1c/b1/1831dd8c9b06c013085d31a2ac4f03392d43bd36bfc6ff591a08bcedc1cf/ml_dtypes-0.6.0-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
   name: ml-dtypes
   version: 0.6.0
