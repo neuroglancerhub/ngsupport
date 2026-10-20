@@ -41,7 +41,10 @@ Configs
 -------
 <config-name> names a YAML (or JSON) file in the directory given by the
 NGSUPPORT_MULTIRES_MESH_CONFIG_DIR environment variable (by default, the
-'multires_mesh_configs' directory next to this module).  The file may be a complete
+'multires_mesh_configs' directory next to this module).  The directory may also be
+a bucket location, such as 'gs://my-bucket/configs', in which case the service needs
+read access to it.  Edited configs are reloaded automatically (within
+CONFIG_CACHE_SECONDS, for configs in a bucket).  The file may be a complete
 flyemflows 'chunkedbodymeshes' workflow config, or just its two relevant sections:
 
     body-meshes: {...}   # See neuclease.misc.bodymesh.BodyMeshParametersSchema
@@ -159,6 +162,10 @@ CHUNK_REQUEST_TIMEOUT = (30.0, 900.0)
 
 # How long a resolved UUID can be reused by fragment requests (see _resolve_uuid()).
 UUID_CACHE_SECONDS = 60
+
+# For configs in a bucket: how long before we check the bucket for an updated config.
+# (Every request loads the config, and we don't want to query the bucket every time.)
+CONFIG_CACHE_SECONDS = 30
 
 # Bodies are locked via a fixed set of lock files (one per stripe).
 LOCK_STRIPES = 1024
@@ -510,11 +517,17 @@ def _config_digest(config):
 _CONFIG_NAME_PATTERN = re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.-]*')
 
 
+CONFIG_EXTENSIONS = ('.yaml', '.yml', '.json')
+
+
 def _load_config(config_name):
     if not _CONFIG_NAME_PATTERN.fullmatch(config_name) or '..' in config_name:
         raise ConfigError(f"Invalid multires mesh config name: {config_name!r}")
 
-    for ext in ('.yaml', '.yml', '.json'):
+    if '://' in CONFIG_DIR:
+        return _load_config_from_store(CONFIG_DIR, config_name)
+
+    for ext in CONFIG_EXTENSIONS:
         path = os.path.join(CONFIG_DIR, config_name + ext)
         if os.path.isfile(path):
             # Including the mtime in the cache key means edited configs are reloaded.
@@ -523,8 +536,59 @@ def _load_config(config_name):
     raise ConfigError(f"Unknown multires mesh config: {config_name!r}")
 
 
+_config_locations = {}
+_config_locations_lock = threading.Lock()
+
+
+def _load_config_from_store(config_dir, config_name):
+    """
+    Load a config from a bucket (or other object store; see neuclease.misc.meshstore).
+    Which object holds the config (and its generation) is cached for CONFIG_CACHE_SECONDS.
+    """
+    from neuclease.misc.meshstore import open_store
+
+    key = (config_dir, config_name)
+    now = time.time()
+    with _config_locations_lock:
+        cached = _config_locations.get(key)
+    if cached and now - cached[0] < CONFIG_CACHE_SECONDS:
+        location = cached[1]
+    else:
+        location = None
+        store = open_store(config_dir)
+        for ext in CONFIG_EXTENSIONS:
+            if (info := store.stat(config_name + ext)):
+                location = (config_name + ext, info.generation)
+                break
+        with _config_locations_lock:
+            _config_locations[key] = (now, location)
+
+    if location is None:
+        raise ConfigError(f"Unknown multires mesh config: {config_name!r}")
+
+    # Including the generation in the cache key means edited configs are reloaded.
+    name, generation = location
+    return _load_config_object(config_dir, name, generation)
+
+
+@functools.lru_cache(maxsize=32)
+def _load_config_object(config_dir, name, _generation):
+    from neuclease.misc.meshstore import open_store
+    text = open_store(config_dir).get(name)
+    if text is None:
+        # It was deleted since we checked.
+        raise ConfigError(f"Unknown multires mesh config: {name!r}")
+    return _parse_config(text.decode('utf-8'), f'{config_dir.rstrip("/")}/{name}')
+
+
 @functools.lru_cache(maxsize=32)
 def _load_config_file(path, _mtime):
+    with open(path, 'r') as f:
+        return _parse_config(f.read(), path)
+
+
+def _parse_config(text, path):
+    """Parse and validate a config.  (The path is just for error messages.)"""
     from confiddler import validate
     from jsonschema import ValidationError
     from ruamel.yaml import YAML
@@ -533,8 +597,7 @@ def _load_config_file(path, _mtime):
 
     # Parse with YAML 1.2 (via ruamel), as flyemflows does.
     # (With PyYAML's YAML 1.1, values like '10e6' would be parsed as strings.)
-    with open(path, 'r') as f:
-        cfg = YAML(typ='safe').load(f) or {}
+    cfg = YAML(typ='safe').load(text) or {}
 
     # Accept a full flyemflows 'chunkedbodymeshes' workflow config, too.
     cfg = cfg.get('chunkedbodymeshes', cfg)

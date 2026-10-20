@@ -229,6 +229,8 @@ def service(monkeypatch, tmp_path):
     monkeypatch.setattr(multires_mesh, '_body_mesh_locations', {})
     multires_mesh._voxel_size_xyz.cache_clear()
     multires_mesh._load_config_file.cache_clear()
+    multires_mesh._load_config_object.cache_clear()
+    monkeypatch.setattr(multires_mesh, '_config_locations', {})
 
     return app.test_client(), dvid
 
@@ -651,3 +653,57 @@ def test_changed_settings_regenerate_body_mesh(service, tmp_path):
 
     # The chunks were reused.
     assert dvid.sparsevol_requests == 27
+
+
+@pytest.fixture
+def bucket_config_dir(service, monkeypatch):
+    """Load configs from an (in-memory) bucket instead of a local directory."""
+    from neuclease.misc.meshstore import MemoryStore, open_store
+    from ngsupport import multires_mesh
+    MemoryStore.clear_all()
+    monkeypatch.setattr(multires_mesh, 'CONFIG_DIR', 'mem://config-bucket/configs')
+    store = open_store('mem://config-bucket/configs')
+    store.put('test.yaml', TEST_CONFIG.encode())
+    return store
+
+
+def test_config_from_bucket(service, bucket_config_dir, monkeypatch):
+    from ngsupport import multires_mesh
+    client, _dvid = service
+    store = bucket_config_dir
+
+    r = client.get(f'{SOURCE}/1.index')
+    assert r.status_code == 200, r.data
+    assert _parse_manifest(r.data)[0] == 1
+
+    unknown = client.get(SOURCE.replace('/test', '/nosuchconfig') + '/info')
+    assert unknown.status_code == 404
+    assert b'Unknown multires mesh config' in unknown.data
+
+    # Edits to the config in the bucket are noticed once the cached lookup expires.
+    store.put('test.yaml', TEST_CONFIG.replace('    smoothing: 0\n', '    smoothing: 0\n    num-lods: 2\n', 1).encode())
+    assert _parse_manifest(client.get(f'{SOURCE}/1.index').data)[0] == 1
+    monkeypatch.setattr(multires_mesh, 'CONFIG_CACHE_SECONDS', 0)
+    assert _parse_manifest(client.get(f'{SOURCE}/1.index').data)[0] == 2
+
+    # Invalid configs in the bucket are reported, too.
+    store.put('bad.yaml', b'body-meshes: {}\n')
+    bad = client.get(SOURCE.replace('/test', '/bad') + '/info')
+    assert bad.status_code == 404
+    assert b'mem://config-bucket/configs/bad.yaml' in bad.data
+
+
+def test_config_bucket_lookups_are_cached(service, bucket_config_dir, monkeypatch):
+    """Fragment requests (which also load the config) don't each query the bucket."""
+    from neuclease.misc.meshstore import MemoryStore
+    client, _dvid = service
+
+    stats = []
+    real_stat = MemoryStore.stat
+    monkeypatch.setattr(MemoryStore, 'stat', lambda self, name: stats.append(name) or real_stat(self, name))
+
+    r = client.get(f'{SOURCE}/1.index')
+    _num_lods, fragments = _parse_manifest(r.data)
+    _fetch_all_fragments(client, fragments)
+    assert len([f for f in fragments if f[-1]]) > 10
+    assert stats == ['test.yaml']
