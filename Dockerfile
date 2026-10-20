@@ -1,18 +1,26 @@
-FROM ghcr.io/prefix-dev/pixi:0.40.0 AS build
+# Note: This pixi version must be able to read our pixi.lock, whose format depends
+# on the version of pixi that wrote it.  If you upgrade pixi itself, you may need
+# to update this version, too, since newer versions of pixi may write lock files
+# that older versions can't read.
+FROM ghcr.io/prefix-dev/pixi:0.81.0 AS build
 
 # copy source code, pixi.toml and pixi.lock to the container
 COPY . /app
 WORKDIR /app
 
+RUN cat pixi.toml
+
+# Install exactly the (linux-64) environment in pixi.lock.
+# With --locked, the build fails if pixi.lock is out-of-date with pixi.toml, rather than
+# re-solving the environment, so run 'pixi lock' (on any platform) after editing pixi.toml.
+RUN pixi install --locked
+RUN pixi list
+
 # Create the shell-hook bash script to activate the environment
-RUN pixi shell-hook > /shell-hook.sh
+RUN pixi shell-hook --locked > /shell-hook.sh
 
 # extend the shell-hook script to run the command passed to the container
 RUN echo 'exec "$@"' >> /shell-hook.sh
-
-RUN cat pixi.toml
-RUN pixi install
-RUN pixi list
 
 FROM ubuntu:24.04 AS production
 
