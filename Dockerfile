@@ -53,6 +53,8 @@ ENV PYTHONPATH=${APP_HOME}
 # no more pixi needed in the prod container
 ENTRYPOINT ["/bin/bash", "/shell-hook.sh"]
 
-# Use the PORT environment variable provided by Cloud Run, fallback to 8080 if not set
-CMD ["sh", "-c", "gunicorn --bind 0.0.0.0:${PORT:-8080} --workers 4 --threads 2 ngsupport.app:app"]
+# Use the PORT environment variable provided by Cloud Run, fallback to 8080 if not set.
+# The number of worker processes and threads (per instance) can be configured via
+# GUNICORN_WORKERS and GUNICORN_THREADS.  (Set the Cloud Run concurrency to their product.)
+CMD ["sh", "-c", "gunicorn --bind 0.0.0.0:${PORT:-8080} --workers ${GUNICORN_WORKERS:-4} --threads ${GUNICORN_THREADS:-2} ngsupport.app:app"]
 
