@@ -2,8 +2,8 @@
 Tests for the /multires-mesh endpoints (ngsupport/multires_mesh.py).
 
 DVID is faked, including an in-memory keyvalue store, so the real
-neuclease.misc.bodymesh.update_body_mesh() machinery (chunk cache, staleness
-checks, body assembly) runs against it.  The fake segmentation contains a single
+neuclease.misc.multiresmesh.update_multires_body_mesh() machinery (chunk reuse,
+staleness checks, body assembly) runs against it.  The fake segmentation contains a single
 body (label 1) shaped like a sphere, spanning a 3x3x3 grid of 64-voxel chunks.
 """
 import json
@@ -25,35 +25,34 @@ import DracoPy  # noqa: E402
 
 SOURCE = '/multires-mesh/fake-dvid/abc123:master/segmentation/test'
 RESOLVED_UUID = 'abc123def456abc123def456abc12345'
-MESH_INSTANCES = {'segmentation_multires_meshes', 'segmentation_multires_mesh_info',
-                  'segmentation_multires_chunk_meshes'}
+MESH_INSTANCES = {'segmentation_multires_meshes', 'segmentation_multires_mesh_info'}
 
 TEST_CONFIG = """\
-# A complete flyemflows 'chunkedbodymeshes' workflow config is accepted.
-workflow-name: chunkedbodymeshes
-chunkedbodymeshes:
-  body-meshes:
-    format: neuroglancer-multi-res
-    source-method: concatenated-chunks-test-q
-    smoothing: 0
-    small-body-overall-decimation-s0: 1.0
-    large-body-overall-decimation-s0: 1.0
-    # YAML 1.2 floats (these would be strings under PyYAML's YAML 1.1)
-    small-body-cutoff-vertices-s0: 10e6
-    large-body-cutoff-vertices-s0: 100e6
-  chunk-meshes:
-    config-name: test
+# A complete flyemflows 'multiresbodymeshes' workflow config is accepted.
+workflow-name: multiresbodymeshes
+multiresbodymeshes:
+  mesh-config:
     base-uuid: abc123
     chunk-shape-s0: [64, 64, 64]
     chunk-halo: 2
-    quality-configs:
-      - name: q
-        source-scale: 1
-        morphological-closing-s0: 0
-        fill-holes: false
-        smoothing: 1
-        decimation-s0: 1.0
+    source-scale: 1
+    fill-holes: false
+    smoothing: 1
+    lod-error-thresholds: [0.5, 5.0]
 """
+
+# The same settings, as a plain config.
+PLAIN_CONFIG = """\
+base-uuid: abc123
+chunk-shape-s0: [64, 64, 64]
+chunk-halo: 2
+source-scale: 1
+fill-holes: false
+smoothing: 1
+lod-error-thresholds: [0.5, 5.0]
+"""
+
+ALL_CELLS = {(x, y, z) for x in range(3) for y in range(3) for z in range(3)}
 
 
 def _dvid_error(status):
@@ -75,7 +74,7 @@ def _crop(vol, box):
 
 
 class FakeDVID:
-    """Just enough of DVID for bodymesh.update_body_mesh() and the multires-mesh endpoints."""
+    """Just enough of DVID for multiresmesh.update_multires_body_mesh() and the multires-mesh endpoints."""
 
     def __init__(self):
         import pandas as pd
@@ -169,14 +168,6 @@ class FakeDVID:
         self._check_instance(instance)
         self.kv.pop((instance, str(key)), None)
 
-    def fetch_keyrange(self, server, uuid, instance, key1, key2, **kwargs):
-        self._check_instance(instance)
-        return sorted(k for (i, k) in self.kv if i == instance and key1 <= k <= key2)
-
-    def fetch_keyvalues(self, server, uuid, instance, keys, **kwargs):
-        self._check_instance(instance)
-        return {k: self.kv.get((instance, k)) for k in keys}
-
     # The raw keyvalue GET used by the multires-mesh fragment proxy
     def fetch_value_range(self, server, uuid, instance, key, range_header=None):
         from werkzeug.http import parse_range_header
@@ -204,15 +195,18 @@ def service(monkeypatch, tmp_path):
     """
     import neuclease.dvid
     import neuclease.dvid.keyvalue
-    from neuclease.misc import bodymesh
+    from neuclease.misc import bodymesh, multiresmesh
+    from neuclease.misc.meshstore import MemoryStore
     from ngsupport import multires_mesh
     from ngsupport.app import app
 
     dvid = FakeDVID()
-    for name in ('resolve_ref', 'fetch_lastmod', 'fetch_labelindex', 'fetch_sparsevol',
-                 'fetch_key', 'post_key', 'delete_key', 'fetch_keyrange', 'fetch_keyvalues'):
-        monkeypatch.setattr(bodymesh, name, getattr(dvid, name))
-    monkeypatch.setattr(bodymesh, 'fetch_resolution_zyx', lambda *args: (8.0, 8.0, 8.0))
+    for mod in (bodymesh, multiresmesh):
+        for name in ('resolve_ref', 'fetch_lastmod', 'fetch_labelindex', 'fetch_sparsevol',
+                     'fetch_key', 'post_key', 'delete_key'):
+            if hasattr(mod, name):
+                monkeypatch.setattr(mod, name, getattr(dvid, name))
+    monkeypatch.setattr(multiresmesh, 'fetch_resolution_zyx', lambda *args: (8.0, 8.0, 8.0))
     monkeypatch.setattr(neuclease.dvid, 'resolve_ref', dvid.resolve_ref)
     monkeypatch.setattr(neuclease.dvid, 'fetch_instance_info', dvid.fetch_instance_info)
     monkeypatch.setattr(neuclease.dvid.keyvalue, 'fetch_key', dvid.fetch_key)
@@ -231,6 +225,8 @@ def service(monkeypatch, tmp_path):
     multires_mesh._load_config_file.cache_clear()
     multires_mesh._load_config_object.cache_clear()
     monkeypatch.setattr(multires_mesh, '_config_locations', {})
+    MemoryStore.clear_all()
+    multiresmesh._verified_store_infos.clear()
 
     return app.test_client(), dvid
 
@@ -277,6 +273,10 @@ def _fetch_all_fragments(client, fragments):
         assert len(DracoPy.decode(r.data).faces) > 0
 
 
+def _positions(fragments, lod):
+    return {p for (frag_lod, p, _, size) in fragments if size and frag_lod == lod}
+
+
 def test_info(service):
     client, _ = service
     r = client.get(f'{SOURCE}/info')
@@ -296,26 +296,34 @@ def test_manifest_generates_and_stores_mesh(service):
     assert r.headers['Content-Type'] == 'application/octet-stream'
     assert r.headers['Cache-Control'] == 'no-store'
 
-    # The chunks and the body mesh were generated and stored in DVID.
+    # The chunks were generated, and the body mesh was stored in DVID.
     assert dvid.sparsevol_requests == 27
-    chunk_keys = [k for (i, k) in dvid.kv if i == 'segmentation_multires_chunk_meshes']
-    assert len(chunk_keys) == 27
     assert dvid.kv[('segmentation_multires_meshes', '1.index')] == r.data
+    assert ('segmentation_multires_meshes', '1.chunks') in dvid.kv
     stored_info = json.loads(dvid.kv[('segmentation_multires_meshes', 'info')])
     assert stored_info == client.get(f'{SOURCE}/info').get_json()
     mesh_info = json.loads(dvid.kv[('segmentation_multires_mesh_info', '1')])
     assert mesh_info['lastmod'] == 10
 
     num_lods, fragments = _parse_manifest(r.data)
-    assert num_lods == 1
+    assert num_lods == 2
     # Every chunk of the sphere's 3x3x3 grid except the (fully interior) center chunk.
-    positions = {p for (_, p, _, size) in fragments if size}
-    assert positions == {(x, y, z) for x in range(3) for y in range(3) for z in range(3)} - {(1, 1, 1)}
+    assert _positions(fragments, 0) == ALL_CELLS - {(1, 1, 1)}
+    assert _positions(fragments, 1) == {(x, y, z) for x in range(2) for y in range(2) for z in range(2)}
     _fetch_all_fragments(client, fragments)
 
     # A second manifest request finds the stored mesh up-to-date.
     assert client.get(f'{SOURCE}/1.index').data == r.data
     assert dvid.sparsevol_requests == 27
+
+
+def test_plain_config(service, tmp_path):
+    """A config file may contain just the mesh settings (rather than a workflow config)."""
+    client, _dvid = service
+    (tmp_path / 'configs' / 'test.yaml').write_text(PLAIN_CONFIG)
+    r = client.get(f'{SOURCE}/1.index')
+    assert r.status_code == 200, r.data
+    assert _parse_manifest(r.data)[0] == 2
 
 
 def test_edit_regenerates_only_affected_chunks(service):
@@ -329,7 +337,9 @@ def test_edit_regenerates_only_affected_chunks(service):
 
     # Only the edited chunk was regenerated, and the body mesh was reassembled.
     assert dvid.sparsevol_requests == 28
-    assert json.loads(dvid.kv[('segmentation_multires_mesh_info', '1')])['lastmod'] == 11
+    mesh_info = json.loads(dvid.kv[('segmentation_multires_mesh_info', '1')])
+    assert mesh_info['lastmod'] == 11
+    assert (mesh_info['generated-chunk-count'], mesh_info['reused-chunk-count']) == (1, 26)
     _num_lods, fragments = _parse_manifest(second.data)
     _fetch_all_fragments(client, fragments)
     assert len(first) == len(second.data)  # (Same fragment count; contents may differ.)
@@ -400,16 +410,17 @@ def test_mesh_instances_not_initialized(service):
 def test_invalid_configs(service, tmp_path):
     client, _ = service
     configs = {
-        'badquality': TEST_CONFIG.replace('concatenated-chunks-test-q', 'concatenated-chunks-test-nosuchquality'),
-        'singleres': TEST_CONFIG.replace('neuroglancer-multi-res', 'neuroglancer-single-res'),
+        'decreasing': TEST_CONFIG.replace('[0.5, 5.0]', '[5.0, 0.5]'),
+        'badshape': TEST_CONFIG.replace('[64, 64, 64]', '[64, 64, 100]'),
+        'unknownsetting': TEST_CONFIG + '    num-lods: 2\n',
+        'nomeshconfig': 'workflow-name: multiresbodymeshes\nmultiresbodymeshes: {}\n',
+        'oldformat': 'body-meshes: {}\nchunk-meshes: {}\n',
     }
     for name, text in configs.items():
         (tmp_path / 'configs' / f'{name}.yaml').write_text(text)
         r = client.get(SOURCE.replace('/test', f'/{name}') + '/info')
         assert r.status_code == 404, name
-
-    r = client.get(SOURCE.replace('/test', '/singleres') + '/info')
-    assert b'neuroglancer-multi-res' in r.data
+        assert f'{name}.yaml'.encode() in r.data, name
 
 
 def test_unsatisfiable_range(service):
@@ -418,37 +429,30 @@ def test_unsatisfiable_range(service):
     assert client.get(f'{SOURCE}/1', headers={'Range': 'bytes=999999999-'}).status_code == 416
 
 
-def _update_body_1(dvid):
-    """Call update_body_mesh() for body 1 the way the service does."""
-    from neuclease.misc import bodymesh
+def _update_body_1():
+    """Call update_multires_body_mesh() for body 1 the way the service does."""
+    from neuclease.misc.multiresmesh import update_multires_body_mesh
     from ngsupport import multires_mesh
     config = multires_mesh._load_config('test')
-    bodymesh.update_body_mesh('https://fake-dvid', RESOLVED_UUID, 'segmentation', 1,
-                              json.loads(json.dumps(config.body)), json.loads(json.dumps(config.chunk)),
-                              processes=0, expect_concurrent_updates=True)
+    return update_multires_body_mesh('https://fake-dvid', RESOLVED_UUID, 'segmentation', 1,
+                                     json.loads(json.dumps(config)), processes=0, expect_concurrent_updates=True)
 
 
-def test_concurrent_updates_share_chunks(service):
-    """
-    Two concurrent updates of the same body (as if on two different hosts) mostly
-    divide the chunks between them, rather than each generating all of them.
-    """
+def test_concurrent_updates(service):
+    """Two concurrent updates of the same body (as if on two different hosts) both succeed."""
     client, dvid = service
-    dvid.sparsevol_delay = 0.02
+    dvid.sparsevol_delay = 0.01
 
     with ThreadPoolExecutor(2) as executor:
-        for f in [executor.submit(_update_body_1, dvid) for _ in range(2)]:
+        for f in [executor.submit(_update_body_1) for _ in range(2)]:
             f.result()
-
-    # Without coordination, that would have taken 2 * 27 = 54 chunk generations.
-    assert dvid.sparsevol_requests < 40, dvid.sparsevol_requests
-    assert len([k for (i, k) in dvid.kv if i == 'segmentation_multires_chunk_meshes']) == 27
 
     # The stored mesh is complete and usable.
     r = client.get(f'{SOURCE}/1.index')
     _num_lods, fragments = _parse_manifest(r.data)
+    assert _positions(fragments, 0) == ALL_CELLS - {(1, 1, 1)}
     _fetch_all_fragments(client, fragments)
-    assert dvid.sparsevol_requests < 40
+    assert dvid.sparsevol_requests <= 54
 
 
 def test_body_mesh_not_stored_if_another_process_finished_it(service):
@@ -457,19 +461,19 @@ def test_body_mesh_not_stored_if_another_process_finished_it(service):
     we don't assemble (or store) our own.
     """
     _client, dvid = service
-    method = 'concatenated-chunks-test-q'
 
-    from neuclease.misc import bodymesh
+    from neuclease.misc import multiresmesh
     from ngsupport import multires_mesh
-    settings = bodymesh._assembly_settings(multires_mesh._load_config('test').body)
+    config = multires_mesh._load_config('test')
 
     def another_process_finishes():
-        mesh_info = {'body': 1, 'lastmod': dvid.mutid, 'method': method,
-                     'storage': 'dvid', 'assembly-settings': settings}
+        mesh_info = {'body': 1, 'lastmod': dvid.mutid, 'method': multiresmesh.MESH_METHOD,
+                     'mesh-info-version': multiresmesh.MESH_INFO_VERSION, 'storage': 'dvid',
+                     'mesh-settings': multiresmesh.mesh_settings(config)}
         dvid.kv[('segmentation_multires_mesh_info', '1')] = json.dumps(mesh_info).encode()
 
     dvid.on_sparsevol = another_process_finishes
-    _update_body_1(dvid)
+    assert _update_body_1() is None
 
     assert dvid.sparsevol_requests == 27
     assert ('segmentation_multires_meshes', '1') not in dvid.posted_keys
@@ -482,7 +486,7 @@ def test_dvid_errors_are_reported_without_admintoken(service, monkeypatch):
     but doesn't reveal the admin token from the DVID URL.
     """
     from neuclease.dvid._dvid import dvid_api_wrapper
-    from neuclease.misc import bodymesh
+    from neuclease.misc import multiresmesh
     client, _dvid = service
 
     @dvid_api_wrapper
@@ -492,7 +496,7 @@ def test_dvid_errors_are_reported_without_admintoken(service, monkeypatch):
             f"Max retries exceeded with url: {url} (Caused by ConnectTimeoutError())",
             request=requests.Request('GET', url).prepare())
 
-    monkeypatch.setattr(bodymesh, 'fetch_lastmod', partial(fetch_lastmod, session=object()))
+    monkeypatch.setattr(multiresmesh, 'fetch_lastmod', partial(fetch_lastmod, session=object()))
     r = client.get(f'{SOURCE}/1.index')
     assert r.status_code == HTTPStatus.BAD_GATEWAY
     assert b'ConnectTimeout' in r.data
@@ -530,22 +534,37 @@ def test_chunks_generated_by_workers(service, chunk_workers):
     r = client.get(f'{SOURCE}/1.index')
     assert r.status_code == 200, r.data
 
-    # Each chunk was requested from the workers (with the resolved UUID), and stored by them.
+    # Each chunk was requested from the workers (with the resolved UUID).
     assert len(chunk_workers) == 27
     assert all(u.startswith(f'https://worker/multires-mesh/https-fake-dvid/{RESOLVED_UUID}/segmentation/test/1/chunk')
                for u in chunk_workers)
     assert dvid.sparsevol_requests == 27
-    assert len([k for (i, k) in dvid.kv if i == 'segmentation_multires_chunk_meshes']) == 27
 
     num_lods, fragments = _parse_manifest(r.data)
-    positions = {p for (_, p, _, size) in fragments if size}
-    assert positions == {(x, y, z) for x in range(3) for y in range(3) for z in range(3)} - {(1, 1, 1)}
+    assert num_lods == 2
+    assert _positions(fragments, 0) == ALL_CELLS - {(1, 1, 1)}
     _fetch_all_fragments(client, fragments)
 
     # After an edit, only the affected chunk is requested again.
     dvid.edit_chunk([0, 0, 0])
     assert client.get(f'{SOURCE}/1.index').status_code == 200
     assert len(chunk_workers) == 28
+
+
+def test_chunk_endpoint_returns_pieces(service):
+    from neuclease.misc.multiresmesh import decode_chunk_pieces
+    from ngsupport import multires_mesh
+    client, dvid = service
+    config = multires_mesh._load_config('test')
+    url = f'/multires-mesh/fake-dvid/{RESOLVED_UUID}/segmentation/test/1/chunk'
+    r = client.post(url, json={'chunk': [0, 0, 0], 'config-digest': multires_mesh._config_digest(config)})
+    assert r.status_code == 200, r.data
+    pieces = decode_chunk_pieces(r.data)
+    assert len(pieces) == 2
+    assert all(len(DracoPy.decode(p).faces) > 0 for p in pieces)
+
+    # Nothing was stored.
+    assert dvid.posted_keys == []
 
 
 def test_chunk_worker_rejects_mismatched_config(service, chunk_workers, monkeypatch):
@@ -567,39 +586,30 @@ def test_chunk_endpoint_rejects_bad_requests(service):
     client, _ = service
     url = f'/multires-mesh/fake-dvid/{RESOLVED_UUID}/segmentation/test/1/chunk'
     assert client.post(url, json={'chunk': [0, 0]}).status_code == HTTPStatus.BAD_REQUEST
+    assert client.post(url, json={'chunk': [0, 0, 0, 10, '0x0']}).status_code == HTTPStatus.BAD_REQUEST
     assert client.post(url, data=b'garbage').status_code == HTTPStatus.BAD_REQUEST
 
 
 @pytest.fixture
 def bucket_config(service, tmp_path):
-    """Store the chunk meshes and body meshes in an (in-memory) bucket instead of DVID."""
-    from neuclease.misc.meshstore import MemoryStore, open_store
-    MemoryStore.clear_all()
-    config = TEST_CONFIG.replace(
-        '    source-method: concatenated-chunks-test-q\n',
-        '    source-method: concatenated-chunks-test-q\n    storage: mem://bucket/bodies\n'
-    ).replace(
-        '    chunk-halo: 2\n',
-        '    chunk-halo: 2\n    storage: mem://bucket/chunks\n'
-    )
-    assert config.count('mem://') == 2
+    """Store the body meshes in an (in-memory) bucket instead of DVID."""
+    from neuclease.misc.meshstore import open_store
+    config = TEST_CONFIG + '    storage: mem://bucket/bodies\n'
     (tmp_path / 'configs' / 'test.yaml').write_text(config)
-    return open_store('mem://bucket/chunks'), open_store('mem://bucket/bodies')
+    return open_store('mem://bucket/bodies')
 
 
 def test_meshes_stored_in_bucket(service, bucket_config):
     client, dvid = service
-    chunk_store, body_store = bucket_config
+    body_store = bucket_config
 
     r = client.get(f'{SOURCE}/1.index')
     assert r.status_code == 200, r.data
 
-    # Chunks and body mesh are in the bucket, not DVID (except the mesh_info).
-    assert len(chunk_store.list('test-1-')) == 27
-    assert sorted(body_store.list('')) == ['1', '1.index', 'info']
+    # The body mesh is in the bucket, not DVID (except the mesh_info).
+    assert sorted(body_store.list('')) == ['1', '1.chunks', '1.index', 'info']
     assert body_store.get('1.index') == r.data
     assert json.loads(body_store.get('info')) == client.get(f'{SOURCE}/info').get_json()
-    assert not [k for (i, k) in dvid.kv if i == 'segmentation_multires_chunk_meshes']
     assert ('segmentation_multires_meshes', '1') not in dvid.kv
     mesh_info = json.loads(dvid.kv[('segmentation_multires_mesh_info', '1')])
     assert mesh_info['storage'] == 'mem://bucket/bodies'
@@ -625,42 +635,37 @@ def test_meshes_stored_in_bucket(service, bucket_config):
     r2 = client.get(f'{SOURCE}/1.index')
     assert r2.status_code == 200
     assert dvid.sparsevol_requests == 28
-    assert len(chunk_store.list('test-1-')) == 28
-    assert sorted(body_store.list('')) == ['1', '1.index', 'info']
+    assert sorted(body_store.list('')) == ['1', '1.chunks', '1.index', 'info']
     assert body_store.stat('1').metadata['lastmod'] == str(dvid.mutid)
 
 
-def test_chunk_workers_store_chunks_in_bucket(service, chunk_workers, bucket_config):
-    client, dvid = service
-    chunk_store, body_store = bucket_config
+def test_chunk_workers_with_bucket(service, chunk_workers, bucket_config):
+    client, _dvid = service
+    body_store = bucket_config
     assert client.get(f'{SOURCE}/1.index').status_code == 200
     assert len(chunk_workers) == 27
-    assert len(chunk_store.list('test-1-')) == 27
     assert body_store.get('1.index') is not None
 
 
 def test_changed_settings_regenerate_body_mesh(service, tmp_path):
-    """If the config's body mesh settings change, stored meshes are regenerated."""
+    """If the config's mesh settings change, stored meshes are regenerated from scratch."""
     client, dvid = service
     first = client.get(f'{SOURCE}/1.index').data
 
-    config = TEST_CONFIG.replace('    smoothing: 0\n', '    smoothing: 0\n    num-lods: 2\n', 1)
+    config = TEST_CONFIG.replace('[0.5, 5.0]', '[0.5, 5.0, 50.0]')
     (tmp_path / 'configs' / 'test.yaml').write_text(config)
     r = client.get(f'{SOURCE}/1.index')
     assert r.status_code == 200
     assert r.data != first
-    assert _parse_manifest(r.data)[0] == 2
-
-    # The chunks were reused.
-    assert dvid.sparsevol_requests == 27
+    assert _parse_manifest(r.data)[0] == 3
+    assert dvid.sparsevol_requests == 54
 
 
 @pytest.fixture
 def bucket_config_dir(service, monkeypatch):
     """Load configs from an (in-memory) bucket instead of a local directory."""
-    from neuclease.misc.meshstore import MemoryStore, open_store
+    from neuclease.misc.meshstore import open_store
     from ngsupport import multires_mesh
-    MemoryStore.clear_all()
     monkeypatch.setattr(multires_mesh, 'CONFIG_DIR', 'mem://config-bucket/configs')
     store = open_store('mem://config-bucket/configs')
     store.put('test.yaml', TEST_CONFIG.encode())
@@ -674,20 +679,20 @@ def test_config_from_bucket(service, bucket_config_dir, monkeypatch):
 
     r = client.get(f'{SOURCE}/1.index')
     assert r.status_code == 200, r.data
-    assert _parse_manifest(r.data)[0] == 1
+    assert _parse_manifest(r.data)[0] == 2
 
     unknown = client.get(SOURCE.replace('/test', '/nosuchconfig') + '/info')
     assert unknown.status_code == 404
     assert b'Unknown multires mesh config' in unknown.data
 
     # Edits to the config in the bucket are noticed once the cached lookup expires.
-    store.put('test.yaml', TEST_CONFIG.replace('    smoothing: 0\n', '    smoothing: 0\n    num-lods: 2\n', 1).encode())
-    assert _parse_manifest(client.get(f'{SOURCE}/1.index').data)[0] == 1
-    monkeypatch.setattr(multires_mesh, 'CONFIG_CACHE_SECONDS', 0)
+    store.put('test.yaml', TEST_CONFIG.replace('[0.5, 5.0]', '[0.5, 5.0, 50.0]').encode())
     assert _parse_manifest(client.get(f'{SOURCE}/1.index').data)[0] == 2
+    monkeypatch.setattr(multires_mesh, 'CONFIG_CACHE_SECONDS', 0)
+    assert _parse_manifest(client.get(f'{SOURCE}/1.index').data)[0] == 3
 
     # Invalid configs in the bucket are reported, too.
-    store.put('bad.yaml', b'body-meshes: {}\n')
+    store.put('bad.yaml', b'lod-error-thresholds: [5, 1]\n')
     bad = client.get(SOURCE.replace('/test', '/bad') + '/info')
     assert bad.status_code == 404
     assert b'mem://config-bucket/configs/bad.yaml' in bad.data

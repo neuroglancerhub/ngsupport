@@ -3,21 +3,21 @@ On-demand multi-resolution meshes for neuroglancer, backed by DVID's mesh store.
 
 These endpoints present neuroglancer with an *unsharded* precomputed mesh source
 (``"@type": "neuroglancer_multilod_draco"``, i.e. draco-compressed fragments).
-Body meshes are produced and stored by ``neuclease.misc.bodymesh.update_body_mesh()``,
-exactly as the flyemflows 'chunkedbodymeshes' workflow does:
+Body meshes are produced and stored by
+``neuclease.misc.multiresmesh.update_multires_body_mesh()``, exactly as the
+flyemflows 'multiresbodymeshes' workflow does:
 
 - When a body's manifest is requested, the body mesh is brought up to date first.
-  Chunk meshes which are missing or out-of-date (relative to the body's current
-  voxels) are generated and stored in DVID's '<segmentation>_multires_chunk_meshes'
-  instance, and the body mesh is reassembled from them and stored in
-  '<segmentation>_multires_meshes'.  If the stored body mesh is already up-to-date,
-  nothing is regenerated.
-- The manifest and fragment data are then served from '<segmentation>_multires_meshes',
-  or from an object store (e.g. a Google Cloud Storage bucket), if the config says so
-  (see 'storage' in neuclease.misc.bodymesh.BodyMeshParametersSchema).  In that case,
-  the chunk meshes may be stored there, too.
+  The body's chunks which have changed since its stored mesh was generated
+  (or all of them, if there is no stored mesh yet) are meshed, and the body mesh
+  is reassembled from them and the unchanged chunks of the stored mesh.
+  If the stored body mesh is already up-to-date, nothing is regenerated.
+- The manifest and fragment data are then served from DVID's
+  '<segmentation>_multires_meshes' instance, or from an object store (e.g. a Google
+  Cloud Storage bucket), if the config says so (see 'storage' in
+  neuclease.misc.multiresmesh.MultiresMeshConfigSchema).
 
-The DVID mesh instances must already exist (see bodymesh.init_mesh_instances(..., multires=True)),
+The DVID mesh instances must already exist (see multiresmesh.init_multires_mesh_instances()),
 and the service must be able to write to them (see DVID_ADMIN_TOKEN, below).
 
 To use these meshes in neuroglancer, add a source like this to a segmentation layer:
@@ -33,7 +33,7 @@ Relative to that source URL, the endpoints are:
     info            The mesh source metadata.
     <body>.index    The body's manifest.  Updates the body's stored mesh first, if necessary.
     <body>          The body's fragment data, fetched via HTTP Range requests.
-    <body>/chunk    (POST) Generate and store one chunk mesh.  Used internally (see below).
+    <body>/chunk    (POST) Generate one chunk's mesh pieces.  Used internally (see below).
 
 The <uuid> may be any DVID ref accepted by neuclease's resolve_ref(), e.g. 'f3969:master'.
 
@@ -44,14 +44,19 @@ NGSUPPORT_MULTIRES_MESH_CONFIG_DIR environment variable (by default, the
 'multires_mesh_configs' directory next to this module).  The directory may also be
 a bucket location, such as 'gs://my-bucket/configs', in which case the service needs
 read access to it.  Edited configs are reloaded automatically (within
-CONFIG_CACHE_SECONDS, for configs in a bucket).  The file may be a complete
-flyemflows 'chunkedbodymeshes' workflow config, or just its two relevant sections:
+CONFIG_CACHE_SECONDS, for configs in a bucket).  The file contains the mesh settings
+(see neuclease.misc.multiresmesh.MultiresMeshConfigSchema), for example:
 
-    body-meshes: {...}   # See neuclease.misc.bodymesh.BodyMeshParametersSchema
-    chunk-meshes: {...}  # See neuclease.misc.bodymesh.MeshChunkConfigSchema
+    chunk-shape-s0: [512, 512, 512]
+    chunk-halo: 8
+    source-scale: 2
+    smoothing: 2
+    lod-error-thresholds: [8, 75]
+    base-uuid: fef5a53a7edf4dc4a295110b6979fb22
+    storage: gs://my-bucket/segmentation/body-meshes
 
-The body-meshes 'format' must be 'neuroglancer-multi-res', and its 'source-method'
-must be chunk-based ('concatenated-chunks-...').
+Alternatively, it may be a complete flyemflows 'multiresbodymeshes' workflow config,
+in which case its 'mesh-config' section is used.
 
 Fragment data
 -------------
@@ -66,18 +71,19 @@ support Range requests on keyvalue GETs, and to send CORS headers.
 
 Chunk workers
 -------------
-By default, a body's missing chunk meshes are generated in parallel using a pool of
+By default, a body's changed chunks are meshed in parallel using a pool of
 NGSUPPORT_PROCESS_POOL processes (default: 4) within the instance handling the request.
 Alternatively, set NGSUPPORT_MULTIRES_CHUNK_WORKERS to N to send them to a separate
 deployment of this service (NGSUPPORT_SERVICE_WORKER_BASE, as for /small-mesh),
 with up to N concurrent requests per body.  Each request is handled by the
-'<body>/chunk' endpoint, which generates and stores one chunk mesh in DVID.
+'<body>/chunk' endpoint, which meshes one chunk and returns its pieces (one per LOD).
+(The workers don't store anything.)
 
 - The worker deployment must be separate from the one which handles neuroglancer's
   requests.  Otherwise, all of the service's request threads could end up waiting for
   chunk requests that can't be handled (a deadlock).
 - The worker deployment needs the same configs (it rejects requests from a service whose
-  config differs from its own), and a DVID_ADMIN_TOKEN, if one is needed to store meshes.
+  config differs from its own).
 - Failed chunk requests are retried a few times (e.g. while Cloud Run scales up).
 
 Buckets
@@ -90,25 +96,20 @@ For example (with gcloud storage buckets update gs://<bucket> --cors-file=cors.j
     [{"origin": ["*"], "method": ["GET", "HEAD"], "maxAgeSeconds": 3600,
       "responseHeader": ["Content-Type", "Content-Range", "Content-Length", "Accept-Ranges"]}]
 
-The service (and its chunk workers) must be able to write to the bucket, via the
-service account's credentials.  Consider disabling the bucket's "soft delete" policy,
-since overwritten mesh files would otherwise be retained (and billed) for a week.
+The service must be able to write to the bucket, via the service account's credentials.
+Consider disabling the bucket's "soft delete" policy, since overwritten mesh files
+would otherwise be retained (and billed) for a week.
 
 Other settings
 --------------
-- Bringing a large body's mesh up to date can take a while; make sure the service's
-  request timeout allows for it.
-- Assembling a large body's mesh (especially decimating it) requires a lot of memory,
-  and the decimation library doesn't release all of it afterwards.  So by default,
-  each body mesh is assembled in a separate, short-lived process, which releases all
-  of its memory when it exits.  (Set NGSUPPORT_MULTIRES_ASSEMBLE_IN_SUBPROCESS=0 to
-  assemble it in the request's process instead.)  The peak memory usage is the same,
-  so make sure each instance has enough memory for the largest bodies it may assemble
-  concurrently.
+- Bringing a large body's mesh up to date can take a while (if many of its chunks
+  have changed); make sure the service's request timeout allows for it.
+- Assembling a body's mesh involves no decimation, so it's relatively cheap, but the
+  previous mesh (which holds the unchanged chunks) and the new one are both held in memory.
 - The number of gunicorn worker processes and threads (per instance) can be set via
-  GUNICORN_WORKERS and GUNICORN_THREADS (see the Dockerfile).  Since body meshes are
-  assembled in subprocesses (and chunks may be generated by the worker service), the
-  request threads mostly just wait for I/O, so many threads per process are fine.
+  GUNICORN_WORKERS and GUNICORN_THREADS (see the Dockerfile).  If chunks are generated
+  by the worker service, the request threads mostly just wait for I/O, so many threads
+  per process are fine.
   Set the Cloud Run concurrency to GUNICORN_WORKERS * GUNICORN_THREADS, so that
   requests are sent to other instances (rather than queued) when an instance is busy.
 - DVID access uses neuclease's default sessions, which pass DVID_ADMIN_TOKEN (if set)
@@ -120,10 +121,9 @@ Other settings
 - Progress is logged at INFO level.  Set NGSUPPORT_MULTIRES_DEBUG_LOGGING=1 to also log
   the timing of every chunk.
 - Concurrent manifest requests for the same body are serialized on each host.
-  Requests handled by different hosts may update the same body at the same time;
-  to limit the redundant work, each one generates the body's missing chunks in random
-  order, skips any chunk that another has stored in the meantime, and skips storing
-  the body mesh if another has already stored an up-to-date one.
+  Requests handled by different hosts may update the same body at the same time,
+  in which case each one skips storing the body mesh if another has already stored
+  an up-to-date one.
 """
 import os
 import re
@@ -165,7 +165,6 @@ REDIRECT_FRAGMENTS = os.environ.get('NGSUPPORT_MULTIRES_REDIRECT_FRAGMENTS', '')
 DEBUG_LOGGING = os.environ.get('NGSUPPORT_MULTIRES_DEBUG_LOGGING', '').lower() in ('1', 'true', 'yes')
 DVID_TIMEOUT = float(os.environ.get('NGSUPPORT_DVID_TIMEOUT', 600.0))
 CHUNK_WORKERS = int(os.environ.get('NGSUPPORT_MULTIRES_CHUNK_WORKERS', 0))
-ASSEMBLE_IN_SUBPROCESS = os.environ.get('NGSUPPORT_MULTIRES_ASSEMBLE_IN_SUBPROCESS', '1').lower() in ('1', 'true', 'yes')
 
 # A separate deployment of this service, to which chunk requests are sent (if CHUNK_WORKERS).
 # (The same setting is used by small_mesh.py.)
@@ -252,7 +251,7 @@ def _configure_dvid_access():
     # (even when running in a terminal).
     tqdm_proxy_config['output_file'] = 'logger'
     if DEBUG_LOGGING:
-        logging.getLogger('neuclease.misc.bodymesh').setLevel(logging.DEBUG)
+        logging.getLogger('neuclease.misc.multiresmesh').setLevel(logging.DEBUG)
 
 
 @_error_responses
@@ -261,21 +260,14 @@ def multires_mesh_info(server, uuid, seg_instance, config_name):
     """
     Return the 'info' metadata for the multires mesh source.
 
-    (This matches the 'info' that update_body_mesh() stores in the mesh instance,
+    (This matches the 'info' that update_multires_body_mesh() stores with the meshes,
     but it's computed here so that it's available before any body mesh is stored.)
     """
-    from vol2mesh.multires import build_info
+    from neuclease.misc.multiresmesh import info_json_for
 
     config = _load_config(config_name)
-    vx, vy, vz = _voxel_size_xyz(server, uuid, seg_instance)
-    info = build_info(
-        vertex_quantization_bits=config.body['vertex-quantization-bits'],
-        # Stored-model coordinates are full-resolution voxels; the model space is nanometers.
-        transform=[vx, 0, 0, 0,
-                   0, vy, 0, 0,
-                   0, 0, vz, 0],
-    )
-    return jsonify(info)
+    # Stored-model coordinates are full-resolution voxels; the model space is nanometers.
+    return jsonify(info_json_for(config, _voxel_size_xyz(server, uuid, seg_instance)))
 
 
 @_error_responses
@@ -297,7 +289,7 @@ def multires_mesh_index(server, uuid, seg_instance, config_name, body):
 
 
 def _multires_mesh_index(server, uuid, seg_instance, config_name, body):
-    from neuclease.misc.bodymesh import update_body_mesh
+    from neuclease.misc.multiresmesh import update_multires_body_mesh
 
     _configure_dvid_access()
     config = _load_config(config_name)
@@ -313,11 +305,9 @@ def _multires_mesh_index(server, uuid, seg_instance, config_name, body):
         try:
             # This is a no-op if the stored mesh is already up-to-date.
             # Other service instances may be updating the same body at the same time.
-            update_body_mesh(server, uuid, seg_instance, body,
-                             copy.deepcopy(config.body), copy.deepcopy(config.chunk),
-                             processes=PROCESSES, expect_concurrent_updates=True,
-                             chunk_fn=chunk_fn, chunk_fn_threads=CHUNK_WORKERS,
-                             assemble_in_subprocess=ASSEMBLE_IN_SUBPROCESS)
+            update_multires_body_mesh(server, uuid, seg_instance, body, copy.deepcopy(config),
+                                      processes=PROCESSES, expect_concurrent_updates=True,
+                                      chunk_fn=chunk_fn, chunk_fn_threads=CHUNK_WORKERS)
         except RequestException as ex:
             # Fall back to whatever mesh is already stored (if any).
             # (The log formatter redacts the admin token, if any.)
@@ -344,17 +334,19 @@ def _multires_mesh_index(server, uuid, seg_instance, config_name, body):
 @normalize_server
 def multires_mesh_chunk(server, uuid, seg_instance, config_name, body):
     """
-    Generate (and store in DVID) a single chunk mesh for a body, and return it.
+    Mesh a single chunk of a body, and return its pieces (one per LOD).
     This is how a service instance which is updating a body mesh distributes
     the work of generating its chunks (see _request_chunk_mesh()).
+    Nothing is stored.
 
     The request body is JSON:
 
-        {"chunk": [z, y, x, surface_mutid, block_hash], "config-digest": "..."}
+        {"chunk": [z, y, x], "config-digest": "..."}
 
-    The response is the chunk's (draco) mesh fragment, possibly empty.
+    where [z, y, x] is the chunk's corner (in full-resolution voxels).
+    The response is the chunk's pieces, as encoded by multiresmesh.encode_chunk_pieces().
     """
-    from neuclease.misc.bodymesh import mesh_for_chunk, quality_from_source_method, DummyResourceMgr
+    from neuclease.misc.multiresmesh import generate_chunk_pieces, encode_chunk_pieces
 
     _configure_dvid_access()
     config = _load_config(config_name)
@@ -362,43 +354,39 @@ def multires_mesh_chunk(server, uuid, seg_instance, config_name, body):
 
     payload = request.get_json(silent=True) or {}
     try:
-        z, y, x, surface_mutid, block_hash = payload['chunk']
-        chunk_spec = (int(z), int(y), int(x), int(surface_mutid), str(block_hash))
+        z, y, x = payload['chunk']
+        chunk_zyx = (int(z), int(y), int(x))
     except (KeyError, TypeError, ValueError):
-        return _error_response("Expected JSON with a 'chunk' list: [z, y, x, surface_mutid, block_hash]",
-                               HTTPStatus.BAD_REQUEST)
+        return _error_response("Expected JSON with a 'chunk' list: [z, y, x]", HTTPStatus.BAD_REQUEST)
 
     if payload.get('config-digest') != _config_digest(config):
         msg = (f"Config '{config_name}' differs between the requesting service "
                "and this one.  Deploy the same configs to both.")
         return _error_response(msg, HTTPStatus.CONFLICT)
 
-    quality = quality_from_source_method(config.body, config.chunk)
-    fragment = mesh_for_chunk(
-        server, uuid, seg_instance, body, copy.deepcopy(config.chunk), quality,
-        True, DummyResourceMgr(), True, config.body['vertex-quantization-bits'], True,
-        chunk_spec
-    )
-    return Response(fragment, HTTPStatus.OK, mimetype=OCTET_STREAM)
+    pieces = generate_chunk_pieces(server, uuid, seg_instance, body, copy.deepcopy(config), chunk_zyx)
+    return Response(encode_chunk_pieces(pieces), HTTPStatus.OK, mimetype=OCTET_STREAM)
 
 
-def _request_chunk_mesh(server, uuid, seg_instance, config_name, config_digest, body, chunk_spec):
+def _request_chunk_mesh(server, uuid, seg_instance, config_name, config_digest, body, chunk_zyx):
     """
-    Generate (and store) a chunk mesh by sending a request to the worker service.
-    Used as the chunk_fn for update_body_mesh().  Returns the chunk's mesh fragment.
+    Mesh a chunk by sending a request to the worker service.
+    Used as the chunk_fn for update_multires_body_mesh().  Returns the chunk's pieces.
     """
+    from neuclease.misc.multiresmesh import decode_chunk_pieces
+
     # The worker URL must express the server the way our routes expect it (see normalize_server()).
     server_path = server.replace('://', '-', 1)
     url = f'{WORKER_BASE}/multires-mesh/{server_path}/{uuid}/{seg_instance}/{config_name}/{body}/chunk'
-    payload = {'chunk': list(chunk_spec), 'config-digest': config_digest}
+    payload = {'chunk': list(chunk_zyx), 'config-digest': config_digest}
     status, content = _post_chunk_request(url, payload)
     if status != HTTPStatus.OK:
         msg = content[:1000].decode('utf-8', errors='replace')
-        z, y, x, *_ = chunk_spec
+        z, y, x = chunk_zyx
         r = requests.Response()
         r.status_code = status
         raise ChunkWorkerError(f"Chunk worker failed for chunk {x},{y},{z} ({status}): {msg}", response=r)
-    return content
+    return decode_chunk_pieces(content)
 
 
 def _post_chunk_request(url, payload):
@@ -414,8 +402,7 @@ def _chunk_worker_session():
     """
     A (per-thread) session for chunk requests, which retries failed requests,
     e.g. 429 (Too Many Requests) while Cloud Run scales up the worker service.
-    (Retrying is harmless, since a chunk request just stores the same chunk again,
-    or finds that it has been stored already.)
+    (Retrying is harmless, since a chunk request has no side effects.)
     """
     try:
         return _chunk_worker_sessions.session
@@ -520,12 +507,9 @@ def _body_lock(server, uuid, seg_instance, body):
 # Configs
 #
 
-MeshConfig = namedtuple('MeshConfig', 'body chunk')
-
-
 def _config_digest(config):
     """A digest of a (validated) config's settings, to check that two services agree on them."""
-    settings = json.dumps([config.body, config.chunk], sort_keys=True)
+    settings = json.dumps(config, sort_keys=True)
     return hashlib.sha256(settings.encode()).hexdigest()[:16]
 
 # Config names become file names, so don't permit anything path-like.
@@ -603,36 +587,29 @@ def _load_config_file(path, _mtime):
 
 
 def _parse_config(text, path):
-    """Parse and validate a config.  (The path is just for error messages.)"""
-    from confiddler import validate
+    """
+    Parse and validate a config.  (The path is just for error messages.)
+    Returns the validated config (a dict; see MultiresMeshConfigSchema), which must not be modified.
+    """
     from jsonschema import ValidationError
     from ruamel.yaml import YAML
-    from neuclease.misc.bodymesh import (
-        BodyMeshParametersSchema, MeshChunkConfigSchema, quality_from_source_method)
+    from neuclease.misc.multiresmesh import validate_config
 
     # Parse with YAML 1.2 (via ruamel), as flyemflows does.
     # (With PyYAML's YAML 1.1, values like '10e6' would be parsed as strings.)
     cfg = YAML(typ='safe').load(text) or {}
 
-    # Accept a full flyemflows 'chunkedbodymeshes' workflow config, too.
-    cfg = cfg.get('chunkedbodymeshes', cfg)
-    try:
-        body_cfg = cfg['body-meshes']
-        chunk_cfg = cfg['chunk-meshes']
-    except KeyError as ex:
-        raise ConfigError(f"Config {path} has no '{ex.args[0]}' section") from ex
+    # Accept a full flyemflows 'multiresbodymeshes' workflow config, too.
+    if 'multiresbodymeshes' in cfg:
+        try:
+            cfg = cfg['multiresbodymeshes']['mesh-config']
+        except (KeyError, TypeError) as ex:
+            raise ConfigError(f"Config {path} has no 'multiresbodymeshes: mesh-config' section") from ex
 
     try:
-        validate(body_cfg, BodyMeshParametersSchema, inject_defaults=True)
-        validate(chunk_cfg, MeshChunkConfigSchema, inject_defaults=True)
-        quality_from_source_method(body_cfg, chunk_cfg)
-    except (ValidationError, RuntimeError) as ex:
+        return validate_config(cfg)
+    except (ValidationError, ValueError) as ex:
         raise ConfigError(f"Invalid multires mesh config {path}: {ex}") from ex
-
-    if body_cfg['format'] != 'neuroglancer-multi-res':
-        raise ConfigError(f"Config {path} must specify format: neuroglancer-multi-res")
-
-    return MeshConfig(body_cfg, chunk_cfg)
 
 
 #
@@ -677,14 +654,15 @@ _body_mesh_locations_lock = threading.Lock()
 
 def _locate_body_mesh(server, uuid, seg_instance, body, fresh=False):
     """
-    Find a body's stored multires mesh (see bodymesh.locate_multires_body_mesh()).
+    Find a body's stored multires mesh (see multiresmesh.locate_multires_body_mesh()).
     Returns None if there is none, or a SimpleNamespace with attributes
     store, index_name, data_name, mesh_info, and mesh_instance.
 
     Manifest requests locate the mesh afresh (fresh=True).  Fragment requests
     (which are numerous) reuse a recent result.
     """
-    from neuclease.misc.bodymesh import locate_multires_body_mesh, mesh_instance_names
+    from neuclease.misc.bodymesh import mesh_instance_names
+    from neuclease.misc.multiresmesh import locate_multires_body_mesh
 
     key = (server, uuid, seg_instance, int(body))
     now = time.time()

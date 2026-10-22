@@ -1,53 +1,33 @@
 # Config for the /multires-mesh endpoints (see ngsupport/multires_mesh.py).
 #
-# These are the same 'body-meshes' and 'chunk-meshes' settings used by
-# neuclease.misc.bodymesh (and the flyemflows 'chunkedbodymeshes' workflow).
-# By default, chunk meshes and body meshes are stored in DVID's '<segmentation>_multires_*'
-# instances, but they can be stored in a Google Cloud Storage bucket instead (see 'storage').
-# A complete chunkedbodymeshes workflow config would also be accepted here.
+# These are the same settings used by neuclease.misc.multiresmesh (see MultiresMeshConfigSchema),
+# and the flyemflows 'multiresbodymeshes' workflow ('mesh-config').
+# A complete multiresbodymeshes workflow config would also be accepted here.
 #
 # Neuroglancer source:
 #   precomputed://https://<ngsupport-host>/multires-mesh/<dvid-server>/<uuid>/<segmentation>/512_ddeda
 
-body-meshes:
-  # Must be 'concatenated-chunks-{chunk-meshes.config-name}-{quality-configs[i].name}'
-  source-method: concatenated-chunks-512_ddeda-sc1_halo2_cl8_filled_sm3_dec005
+# Each chunk (the cells of the finest LOD) is meshed independently, with a halo
+# (in source-scale voxels).  Our version of the fish uses 16nm voxels.
+chunk-shape-s0: [512, 512, 512]
+chunk-halo: 2
+source-scale: 1
+morphological-closing-s0: 8
+fill-holes: true
+smoothing: 3
 
-  # Must be neuroglancer-multi-res for the multires-mesh service.
-  format: neuroglancer-multi-res
-  vertex-quantization-bits: 16
-  num-lods: 1
+# One decimation error threshold per LOD, in squared full-resolution voxels.
+# (These were calibrated for source-scale 2, chunk-halo 8, and smoothing 2,
+# for which they keep about 16% and 4% of the undecimated faces.)
+lod-error-thresholds: [8, 75]
+vertex-quantization-bits: 16
 
-  smoothing: 0
-  small-body-overall-decimation-s0: 0.01
-  large-body-overall-decimation-s0: 0.001
-  small-body-cutoff-vertices-s0: 10e6
-  large-body-cutoff-vertices-s0: 100e6
+# Chunks whose surface_mutid is unset are assumed to be up-to-date with this UUID.
+base-uuid: ddeda82d31c94dfca506db671b03a4bf
 
-  # Where to store body meshes: 'dvid' (the default) or a bucket URL.
-  # In a bucket, the newest mesh of each body on the 'live-ref' branch is stored as
-  # '<body>' (a standard precomputed mesh source), and other UUIDs' meshes as '<body>-<uuid>'.
-  # (The bucket must be publicly readable, with CORS enabled; see ngsupport/multires_mesh.py.)
-  # storage: gs://my-bucket/yakuba/segmentation/body-meshes
-  # live-ref: master
-
-chunk-meshes:
-  # Chunks whose surface_mutid is unset are assumed to be up-to-date
-  # with this UUID (see neuclease.misc.bodymesh.MeshChunkConfigSchema).
-  base-uuid: ddeda82d31c94dfca506db671b03a4bf
-
-  # Our version of the fish uses 16nm voxels.
-  chunk-shape-s0: [512, 512, 512]
-  config-name: 512_ddeda
-  chunk-halo: 2
-
-  # Where to store chunk meshes: 'dvid' (the default) or a bucket URL.
-  # storage: gs://my-bucket/yakuba/segmentation/chunk-meshes
-
-  quality-configs:
-    - name: sc1_halo2_cl8_filled_sm3_dec005
-      source-scale: 1
-      morphological-closing-s0: 8
-      fill-holes: True
-      smoothing: 3
-      decimation-s0: 0.005
+# Where to store body meshes: 'dvid' (the default) or a bucket URL.
+# In a bucket, the newest mesh of each body on the 'live-ref' branch is stored as
+# '<body>' (a standard precomputed mesh source), and other UUIDs' meshes as '<body>-<uuid>'.
+# (The bucket must be publicly readable, with CORS enabled; see ngsupport/multires_mesh.py.)
+# storage: gs://my-bucket/yakuba/segmentation/body-meshes
+# live-ref: master
