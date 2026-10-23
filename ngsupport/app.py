@@ -76,6 +76,24 @@ def _multires_mesh_chunk(server, uuid, instance, config, body):
     return multires_mesh_chunk(server, uuid, instance, config, body)
 
 
+@app.route('/multires-mesh/<server>/<uuid>/<instance>/<config>/supervoxels/info')
+def _multires_sv_mesh_info(server, uuid, instance, config):
+    from ngsupport.multires_mesh import multires_sv_mesh_info
+    return multires_sv_mesh_info(server, uuid, instance, config)
+
+
+@app.route('/multires-mesh/<server>/<uuid>/<instance>/<config>/supervoxels/<int:sv>.index')
+def _multires_sv_mesh_index(server, uuid, instance, config, sv):
+    from ngsupport.multires_mesh import multires_sv_mesh_index
+    return multires_sv_mesh_index(server, uuid, instance, config, sv)
+
+
+@app.route('/multires-mesh/<server>/<uuid>/<instance>/<config>/supervoxels/<int:sv>')
+def _multires_sv_mesh_data(server, uuid, instance, config, sv):
+    from ngsupport.multires_mesh import multires_sv_mesh_data
+    return multires_sv_mesh_data(server, uuid, instance, config, sv)
+
+
 @app.route('/block-mesh', methods=['POST'])
 def _block_mesh():
     from ngsupport.small_mesh import gen_block_mesh

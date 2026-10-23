@@ -83,6 +83,12 @@ class FakeDVID:
         vol_s0 = ((zz - 96)**2 + (yy - 96)**2 + (xx - 96)**2) <= 70**2
         self.vols = {0: vol_s0, 1: vol_s0[::2, ::2, ::2]}
 
+        # Supervoxels: 7 is the half of the sphere with x < 96,
+        # and 8 is a single voxel, which vanishes at scale 1.
+        self.sv_vols = {7: vol_s0 & (xx < 96), 8: np.zeros_like(vol_s0)}
+        self.sv_vols[8][101, 101, 101] = True
+        self.created_instances = []
+
         block_zyx = np.unique((np.argwhere(vol_s0) // 64) * 64, axis=0)
         self.blocks_df = pd.DataFrame(block_zyx, columns=[*'zyx'])
         self.blocks_df['sv'] = np.uint64(1)
@@ -138,10 +144,30 @@ class FakeDVID:
         if self.on_sparsevol:
             self.on_sparsevol()
         time.sleep(self.sparsevol_delay)
-        mask = _crop(self.vols[scale], mask_box)
+        if supervoxels:
+            if label not in self.sv_vols:
+                raise _dvid_error(404)
+            vol = self.sv_vols[label][::2**scale, ::2**scale, ::2**scale]
+        else:
+            vol = self.vols[scale]
+        mask = _crop(vol, mask_box)
         if not mask.any():
             raise _dvid_error(404)
         return mask, np.asarray(mask_box)
+
+    def fetch_sparsevol_coarse(self, server, uuid, instance, label, supervoxels=False, **kwargs):
+        """Scale-6 (block) coordinates, ZYX"""
+        assert supervoxels
+        if label not in self.sv_vols:
+            raise _dvid_error(404)
+        return np.unique(np.argwhere(self.sv_vols[label]) // 64, axis=0)
+
+    def fetch_repo_instances(self, server, uuid, **kwargs):
+        return {name: 'keyvalue' for name in self.instances}
+
+    def create_instance(self, server, uuid, instance, typename, versioned=True, compression=None, tags=[], **kwargs):
+        self.instances.add(instance)
+        self.created_instances.append((instance, typename, versioned, tags))
 
     def _check_instance(self, instance):
         if instance not in self.instances:
@@ -203,7 +229,8 @@ def service(monkeypatch, tmp_path):
     dvid = FakeDVID()
     for mod in (bodymesh, multiresmesh):
         for name in ('resolve_ref', 'fetch_lastmod', 'fetch_labelindex', 'fetch_sparsevol',
-                     'fetch_key', 'post_key', 'delete_key'):
+                     'fetch_sparsevol_coarse', 'fetch_key', 'post_key', 'delete_key',
+                     'fetch_repo_instances', 'create_instance'):
             if hasattr(mod, name):
                 monkeypatch.setattr(mod, name, getattr(dvid, name))
     monkeypatch.setattr(multiresmesh, 'fetch_resolution_zyx', lambda *args: (8.0, 8.0, 8.0))
@@ -227,6 +254,8 @@ def service(monkeypatch, tmp_path):
     monkeypatch.setattr(multires_mesh, '_config_locations', {})
     MemoryStore.clear_all()
     multiresmesh._verified_store_infos.clear()
+    multiresmesh._verified_sv_stores.clear()
+    multiresmesh._ensure_sv_mesh_instance.cache_clear()
 
     return app.test_client(), dvid
 
@@ -260,13 +289,13 @@ def _parse_manifest(index_bytes):
     return num_lods, fragments
 
 
-def _fetch_all_fragments(client, fragments):
+def _fetch_all_fragments(client, fragments, source=SOURCE, label=1):
     """Fetch each fragment via a Range request, as neuroglancer does, and check it."""
     total = sum(size for *_, size in fragments)
     for _lod, _p, offset, size in fragments:
         if size == 0:
             continue
-        r = client.get(f'{SOURCE}/1', headers={'Range': f'bytes={offset}-{offset + size - 1}'})
+        r = client.get(f'{source}/{label}', headers={'Range': f'bytes={offset}-{offset + size - 1}'})
         assert r.status_code == 206, r.data
         assert r.headers['Content-Range'] == f'bytes {offset}-{offset + size - 1}/{total}'
         assert r.headers['Cache-Control'] == 'no-store'
@@ -712,3 +741,102 @@ def test_config_bucket_lookups_are_cached(service, bucket_config_dir, monkeypatc
     _fetch_all_fragments(client, fragments)
     assert len([f for f in fragments if f[-1]]) > 10
     assert stats == ['test.yaml']
+
+
+SV_SOURCE = f'{SOURCE}/supervoxels'
+SV_INSTANCE = 'segmentation_multires_sv_meshes'
+
+
+@pytest.fixture
+def sv_config(service, tmp_path):
+    """Support supervoxel meshes (in DVID)."""
+    (tmp_path / 'configs' / 'test.yaml').write_text(TEST_CONFIG + '    supervoxel-storage: dvid\n')
+
+
+def test_sv_meshes_require_config(service):
+    client, dvid = service
+    for path in ('info', '7.index', '7'):
+        r = client.get(f'{SV_SOURCE}/{path}')
+        assert r.status_code == 404
+        assert b"doesn't support supervoxel meshes" in r.data
+    assert dvid.sparsevol_requests == 0
+
+
+def test_sv_mesh_generated_once(service, sv_config):
+    client, dvid = service
+
+    info = client.get(f'{SV_SOURCE}/info')
+    assert info.status_code == 200
+    assert info.get_json() == client.get(f'{SOURCE}/info').get_json()
+
+    r = client.get(f'{SV_SOURCE}/7.index')
+    assert r.status_code == 200, r.data
+
+    # The mesh is stored in an (unversioned) DVID instance of its own, without any mesh_info.
+    assert dvid.created_instances == [(SV_INSTANCE, 'keyvalue', False, {'type': 'meshes'})]
+    assert dvid.kv[(SV_INSTANCE, '7.index')] == r.data
+    assert not [k for (i, k) in dvid.kv if i in MESH_INSTANCES]
+    requests_made = dvid.sparsevol_requests
+    assert requests_made == 2 * 3 * 3   # The supervoxel spans two chunks in x
+
+    num_lods, fragments = _parse_manifest(r.data)
+    assert num_lods == 2
+    assert {p[0] for p in _positions(fragments, 0)} == {0, 1}
+    _fetch_all_fragments(client, fragments, SV_SOURCE, 7)
+
+    # It's never regenerated, even after the body is edited.
+    dvid.edit_chunk([0, 0, 0])
+    assert client.get(f'{SV_SOURCE}/7.index').data == r.data
+    assert dvid.sparsevol_requests == requests_made
+
+
+def test_sv_mesh_not_found(service, sv_config):
+    client, dvid = service
+    # No geometry at the source scale
+    assert client.get(f'{SV_SOURCE}/8.index').status_code == 404
+    assert dvid.kv[(SV_INSTANCE, '8.index')] == b''
+
+    # No such supervoxel (e.g. it was split)
+    assert client.get(f'{SV_SOURCE}/9.index').status_code == 404
+    assert (SV_INSTANCE, '9.index') not in dvid.kv
+
+
+def test_sv_mesh_settings_mismatch(service, sv_config, tmp_path):
+    from neuclease.misc import multiresmesh
+    client, dvid = service
+    assert client.get(f'{SV_SOURCE}/7.index').status_code == 200
+
+    # The settings change, but the supervoxel meshes would be stored in the same place.
+    config = TEST_CONFIG.replace('smoothing: 1', 'smoothing: 2') + '    supervoxel-storage: dvid\n'
+    (tmp_path / 'configs' / 'test.yaml').write_text(config)
+    multiresmesh._verified_sv_stores.clear()
+    r = client.get(f'{SV_SOURCE}/7.index')
+    assert r.status_code == HTTPStatus.CONFLICT
+    assert b'different settings' in r.data
+
+
+def test_sv_mesh_in_bucket(service, tmp_path):
+    from neuclease.misc.meshstore import open_store
+    client, dvid = service
+    (tmp_path / 'configs' / 'test.yaml').write_text(TEST_CONFIG + '    supervoxel-storage: mem://bucket/svs\n')
+
+    r = client.get(f'{SV_SOURCE}/7.index')
+    assert r.status_code == 200, r.data
+    store = open_store('mem://bucket/svs')
+    assert store.list('') == ['7', '7.index', 'info', 'mesh-settings']
+    assert dvid.created_instances == []
+
+    f = client.get(f'{SV_SOURCE}/7', headers={'Range': 'bytes=0-99'})
+    assert f.status_code == HTTPStatus.TEMPORARY_REDIRECT
+    assert f.headers['Location'] == store.public_url('7')
+
+
+def test_sv_chunks_generated_by_workers(service, sv_config, chunk_workers):
+    client, dvid = service
+    r = client.get(f'{SV_SOURCE}/7.index')
+    assert r.status_code == 200, r.data
+    assert len(chunk_workers) == 18
+    assert all(u.startswith(f'https://worker/multires-mesh/https-fake-dvid/{RESOLVED_UUID}/segmentation/test/7/chunk')
+               for u in chunk_workers)
+    _num_lods, fragments = _parse_manifest(r.data)
+    _fetch_all_fragments(client, fragments, SV_SOURCE, 7)

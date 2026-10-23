@@ -58,6 +58,19 @@ CONFIG_CACHE_SECONDS, for configs in a bucket).  The file contains the mesh sett
 Alternatively, it may be a complete flyemflows 'multiresbodymeshes' workflow config,
 in which case its 'mesh-config' section is used.
 
+Supervoxel meshes
+-----------------
+If the config specifies 'supervoxel-storage', supervoxel meshes are also available,
+as a separate mesh source:
+
+    precomputed://https://<ngsupport-host>/multires-mesh/<dvid-server>/<uuid>/<segmentation>/<config-name>/supervoxels
+
+with the endpoints info, <sv>.index, and <sv>, as above.  A supervoxel's mesh is generated
+(with the same settings as the body meshes) the first time its manifest is requested, and
+never regenerated, since supervoxels are immutable.  The <uuid> just needs to be one in
+which the supervoxel exists.  To view the meshes, use this source as the mesh source of a
+segmentation layer whose segment IDs are supervoxels.  (See multiresmesh.update_multires_sv_mesh().)
+
 Fragment data
 -------------
 If the body meshes are stored in a (public) bucket, fragment requests are redirected to it.
@@ -147,6 +160,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from neuclease import redact_admintoken
+from neuclease.misc.multiresmesh import SupervoxelMeshSettingsMismatch
 
 from .util import normalize_server
 
@@ -219,6 +233,8 @@ def _error_responses(f):
             return Response(str(ex), HTTPStatus.NOT_FOUND, mimetype='text/plain')
         except ChunkWorkerError as ex:
             return _error_response(str(ex), HTTPStatus.BAD_GATEWAY)
+        except SupervoxelMeshSettingsMismatch as ex:
+            return _error_response(str(ex), HTTPStatus.CONFLICT)
         except HTTPError as ex:
             # DVID returns 400 for an unknown instance and 404 for an unknown body.
             status = ex.response.status_code if ex.response is not None else None
@@ -334,16 +350,17 @@ def _multires_mesh_index(server, uuid, seg_instance, config_name, body):
 @normalize_server
 def multires_mesh_chunk(server, uuid, seg_instance, config_name, body):
     """
-    Mesh a single chunk of a body, and return its pieces (one per LOD).
-    This is how a service instance which is updating a body mesh distributes
+    Mesh a single chunk of a body (or supervoxel), and return its pieces (one per LOD).
+    This is how a service instance which is generating a mesh distributes
     the work of generating its chunks (see _request_chunk_mesh()).
     Nothing is stored.
 
     The request body is JSON:
 
-        {"chunk": [z, y, x], "config-digest": "..."}
+        {"chunk": [z, y, x], "config-digest": "...", "supervoxels": false}
 
     where [z, y, x] is the chunk's corner (in full-resolution voxels).
+    If "supervoxels" is true, the URL's <body> is a supervoxel ID.
     The response is the chunk's pieces, as encoded by multiresmesh.encode_chunk_pieces().
     """
     from neuclease.misc.multiresmesh import generate_chunk_pieces, encode_chunk_pieces
@@ -364,21 +381,23 @@ def multires_mesh_chunk(server, uuid, seg_instance, config_name, body):
                "and this one.  Deploy the same configs to both.")
         return _error_response(msg, HTTPStatus.CONFLICT)
 
-    pieces = generate_chunk_pieces(server, uuid, seg_instance, body, copy.deepcopy(config), chunk_zyx)
+    supervoxels = bool(payload.get('supervoxels', False))
+    pieces = generate_chunk_pieces(server, uuid, seg_instance, body, copy.deepcopy(config), chunk_zyx,
+                                   supervoxels=supervoxels)
     return Response(encode_chunk_pieces(pieces), HTTPStatus.OK, mimetype=OCTET_STREAM)
 
 
-def _request_chunk_mesh(server, uuid, seg_instance, config_name, config_digest, body, chunk_zyx):
+def _request_chunk_mesh(server, uuid, seg_instance, config_name, config_digest, body, chunk_zyx, supervoxels=False):
     """
-    Mesh a chunk by sending a request to the worker service.
-    Used as the chunk_fn for update_multires_body_mesh().  Returns the chunk's pieces.
+    Mesh a chunk by sending a request to the worker service.  Used as the chunk_fn for
+    update_multires_body_mesh() and update_multires_sv_mesh().  Returns the chunk's pieces.
     """
     from neuclease.misc.multiresmesh import decode_chunk_pieces
 
     # The worker URL must express the server the way our routes expect it (see normalize_server()).
     server_path = server.replace('://', '-', 1)
     url = f'{WORKER_BASE}/multires-mesh/{server_path}/{uuid}/{seg_instance}/{config_name}/{body}/chunk'
-    payload = {'chunk': list(chunk_zyx), 'config-digest': config_digest}
+    payload = {'chunk': list(chunk_zyx), 'config-digest': config_digest, 'supervoxels': supervoxels}
     status, content = _post_chunk_request(url, payload)
     if status != HTTPStatus.OK:
         msg = content[:1000].decode('utf-8', errors='replace')
@@ -430,21 +449,30 @@ def multires_mesh_data(server, uuid, seg_instance, config_name, body):
     location = _locate_body_mesh(server, uuid, seg_instance, body)
     if location is None:
         raise NotFound(f"Body {body} has no stored mesh")
+    return _fragment_data_response(
+        server, uuid, location.store, location.mesh_instance, location.data_name, f"Body {body}")
 
-    if location.store or REDIRECT_FRAGMENTS:
-        if location.store:
-            url = location.store.public_url(location.data_name)
+
+def _fragment_data_response(server, uuid, store, mesh_instance, data_name, description):
+    """
+    Respond to a fragment data request, by redirecting the client to the object store
+    containing the data (if store is given), or else by proxying the request to DVID
+    (or redirecting the client to DVID).
+    """
+    if store or REDIRECT_FRAGMENTS:
+        if store:
+            url = store.public_url(data_name)
         else:
             # Note: The redirect URL must not include DVID_ADMIN_TOKEN.
-            url = f'{server}/api/node/{uuid}/{location.mesh_instance}/key/{location.data_name}'
+            url = f'{server}/api/node/{uuid}/{mesh_instance}/key/{data_name}'
         r = redirect(url, HTTPStatus.TEMPORARY_REDIRECT)
         r.headers.update(NO_STORE_HEADERS)
         return r
 
     range_header = request.headers.get('Range')
-    result = _fetch_value_range(server, uuid, location.mesh_instance, location.data_name, range_header)
+    result = _fetch_value_range(server, uuid, mesh_instance, data_name, range_header)
     if result is None or (result.status == HTTPStatus.OK and not result.content):
-        raise NotFound(f"Body {body} has no stored mesh")
+        raise NotFound(f"{description} has no stored mesh")
 
     headers = {**NO_STORE_HEADERS, 'Accept-Ranges': 'bytes'}
     if result.status == HTTPStatus.PARTIAL_CONTENT:
@@ -457,6 +485,75 @@ def multires_mesh_data(server, uuid, seg_instance, config_name, body):
 
     # DVID sent the whole value.  (Older DVID versions ignore the Range header.)
     return _byte_range_response(result.content)
+
+
+#
+# Supervoxel meshes
+#
+
+def _load_sv_config(config_name):
+    config = _load_config(config_name)
+    if not config['supervoxel-storage']:
+        raise ConfigError(f"Multires mesh config {config_name!r} doesn't support supervoxel meshes "
+                          "(it has no 'supervoxel-storage')")
+    return config
+
+
+@_error_responses
+@normalize_server
+def multires_sv_mesh_info(server, uuid, seg_instance, config_name):
+    """Return the 'info' metadata for the multires supervoxel mesh source."""
+    from neuclease.misc.multiresmesh import info_json_for
+
+    config = _load_sv_config(config_name)
+    return jsonify(info_json_for(config, _voxel_size_xyz(server, uuid, seg_instance)))
+
+
+@_error_responses
+@normalize_server
+def multires_sv_mesh_index(server, uuid, seg_instance, config_name, sv):
+    """
+    Return a supervoxel's multires manifest (the '<sv>.index' file),
+    after generating the supervoxel's mesh, if it hasn't been generated yet.
+    """
+    from neuclease.misc.multiresmesh import update_multires_sv_mesh
+
+    start = time.time()
+    logger.info(f"Supervoxel {sv}: Manifest requested ({server} {uuid} {seg_instance} {config_name})")
+    _configure_dvid_access()
+    config = _load_sv_config(config_name)
+    uuid = _resolve_uuid(server, uuid, fresh=True)
+
+    chunk_fn = None
+    if CHUNK_WORKERS:
+        chunk_fn = functools.partial(_request_chunk_mesh, server, uuid, seg_instance,
+                                     config_name, _config_digest(config), sv, supervoxels=True)
+
+    # (Supervoxel meshes don't depend on the UUID, so neither does the lock.)
+    with _body_lock(server, None, seg_instance, sv, kind='Supervoxel'):
+        index = update_multires_sv_mesh(server, uuid, seg_instance, sv, copy.deepcopy(config),
+                                        processes=PROCESSES, chunk_fn=chunk_fn, chunk_fn_threads=CHUNK_WORKERS)
+
+    logger.info(f"Supervoxel {sv}: Manifest request finished after {time.time() - start:.1f}s")
+    if not index:
+        raise NotFound(f"Supervoxel {sv} has no mesh geometry")
+    return Response(index, HTTPStatus.OK, mimetype=OCTET_STREAM, headers=NO_STORE_HEADERS)
+
+
+@_error_responses
+@normalize_server
+def multires_sv_mesh_data(server, uuid, seg_instance, config_name, sv):
+    """Return (a byte range of) a supervoxel's multires fragment data (the '<sv>' file)."""
+    from neuclease.misc.multiresmesh import locate_multires_sv_mesh, DvidKeyValueStore
+
+    config = _load_sv_config(config_name)
+    uuid = _resolve_uuid(server, uuid)
+    location = locate_multires_sv_mesh(server, uuid, seg_instance, sv, config)
+    if isinstance(location.store, DvidKeyValueStore):
+        store, mesh_instance = None, location.store.instance
+    else:
+        store, mesh_instance = location.store, None
+    return _fragment_data_response(server, uuid, store, mesh_instance, location.data_name, f"Supervoxel {sv}")
 
 
 def _byte_range_response(data):
@@ -478,25 +575,25 @@ def _byte_range_response(data):
 
 
 @contextmanager
-def _body_lock(server, uuid, seg_instance, body):
+def _body_lock(server, uuid, seg_instance, body, kind='Body'):
     """
-    Serialize mesh updates for a body among all threads and processes on this host,
-    so that concurrent manifest requests for the same body don't duplicate the work.
-    (Requests handled by different hosts may still update the same body concurrently;
-    see update_body_mesh(..., expect_concurrent_updates=True).)
+    Serialize mesh updates for a body (or supervoxel, if kind='Supervoxel') among all threads
+    and processes on this host, so that concurrent manifest requests for the same body don't
+    duplicate the work.  (Requests handled by different hosts may still update the same body
+    concurrently; see update_multires_body_mesh(..., expect_concurrent_updates=True).)
     """
-    key = json.dumps([server, uuid, seg_instance, int(body)])
+    key = json.dumps([kind, server, uuid, seg_instance, int(body)])
     stripe = int(hashlib.sha256(key.encode()).hexdigest(), 16) % LOCK_STRIPES
     os.makedirs(LOCK_DIR, exist_ok=True)
     with open(os.path.join(LOCK_DIR, f'{stripe}.lock'), 'a') as f:
         try:
             fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            logger.info(f"Body {body}: Waiting for another request on this host to finish updating "
-                        f"this body (or another body that shares lock stripe {stripe})")
+            logger.info(f"{kind} {body}: Waiting for another request on this host to finish updating "
+                        f"this {kind.lower()} (or another that shares lock stripe {stripe})")
             start = time.time()
             fcntl.flock(f, fcntl.LOCK_EX)
-            logger.info(f"Body {body}: Acquired the body lock after waiting {time.time() - start:.1f}s")
+            logger.info(f"{kind} {body}: Acquired the lock after waiting {time.time() - start:.1f}s")
         try:
             yield
         finally:
