@@ -8,14 +8,14 @@ version = "0.1.0"
 [tasks]
 
 [dependencies]
-python = ">=3.14.8,<3.15"
+python = ">=3.14.9,<3.15"
 flask = ">=3.1.3,<4"
 flask-cors = ">=6.0.5,<7"
 flask-compress = ">=1.25,<2"
 gunicorn = ">=26.2.0,<27"
 google-cloud-storage = ">=3.17.0,<4"
-neuclease = ">=0.100.post0.dev6,<0.101"
-vol2mesh = ">=0.3.post5,<0.4"
+neuclease = ">=0.100.post0.dev19,<0.101"
+vol2mesh = ">=0.3.post10,<0.4"
 trimesh = ">=5.1.1,<6"  # Used by vol2mesh.multires (multires-mesh endpoints)
 
 [pypi-dependencies]
