@@ -58,6 +58,15 @@ CONFIG_CACHE_SECONDS, for configs in a bucket).  The file contains the mesh sett
 Alternatively, it may be a complete flyemflows 'multiresbodymeshes' workflow config,
 in which case its 'mesh-config' section is used.
 
+Clients which need a volume
+---------------------------
+Some clients (e.g. cloud-volume) can only read meshes which belong to a precomputed
+volume (whose 'info' names the mesh directory).  For them, '<config>/volume' is a nominal
+segmentation volume (with no voxel data), whose 'mesh' is '<config>/volume/mesh', which is
+an alias of '<config>'.  For example, with cloud-volume:
+
+    CloudVolume('precomputed://https://<ngsupport-host>/multires-mesh/<dvid-server>/<uuid>/<segmentation>/<config-name>/volume')
+
 Supervoxel meshes
 -----------------
 If the config specifies 'supervoxel-storage', supervoxel meshes are also available,
@@ -284,6 +293,48 @@ def multires_mesh_info(server, uuid, seg_instance, config_name):
     config = _load_config(config_name)
     # Stored-model coordinates are full-resolution voxels; the model space is nanometers.
     return jsonify(info_json_for(config, _voxel_size_xyz(server, uuid, seg_instance)))
+
+
+@_error_responses
+@normalize_server
+def multires_mesh_volume_info(server, uuid, seg_instance, config_name):
+    """
+    Return the 'info' for a (nominal) neuroglancer precomputed segmentation volume whose
+    'mesh' is this mesh source, i.e. '<config>/volume/mesh' (an alias of '<config>').
+
+    Some clients (e.g. cloud-volume) can only read meshes which belong to a volume.
+    The volume itself can't be read (it has no voxel data), but its metadata (resolution,
+    block size, and bounds) match the DVID segmentation's, if DVID provides them.
+    """
+    from neuclease.dvid import fetch_instance_info
+
+    _load_config(config_name)
+    extended = fetch_instance_info(server, _resolve_uuid(server, uuid), seg_instance).get('Extended', {})
+    resolution = [float(r) for r in extended.get('VoxelSize', [1, 1, 1])]
+    block_size = [int(b) for b in extended.get('BlockSize', [64, 64, 64])]
+    try:
+        min_point = [int(p) for p in extended['MinPoint']]
+        max_point = [int(p) for p in extended['MaxPoint']]
+        size = [b - a + 1 for a, b in zip(min_point, max_point)]
+    except (KeyError, TypeError):
+        min_point, size = [0, 0, 0], [1, 1, 1]
+
+    info = {
+        "@type": "neuroglancer_multiscale_volume",
+        "type": "segmentation",
+        "data_type": "uint64",
+        "num_channels": 1,
+        "mesh": "mesh",
+        "scales": [{
+            "key": '_'.join(f'{r:g}' for r in resolution),
+            "size": size,
+            "resolution": resolution,
+            "voxel_offset": min_point,
+            "chunk_sizes": [block_size],
+            "encoding": "raw",
+        }],
+    }
+    return jsonify(info)
 
 
 @_error_responses

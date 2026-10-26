@@ -53,18 +53,21 @@ def _svmesh_ngmesh(server, uuid, instance, segment_type, segment_id):
 
 
 @app.route('/multires-mesh/<server>/<uuid>/<instance>/<config>/info')
+@app.route('/multires-mesh/<server>/<uuid>/<instance>/<config>/volume/mesh/info')
 def _multires_mesh_info(server, uuid, instance, config):
     from ngsupport.multires_mesh import multires_mesh_info
     return multires_mesh_info(server, uuid, instance, config)
 
 
 @app.route('/multires-mesh/<server>/<uuid>/<instance>/<config>/<int:body>.index')
+@app.route('/multires-mesh/<server>/<uuid>/<instance>/<config>/volume/mesh/<int:body>.index')
 def _multires_mesh_index(server, uuid, instance, config, body):
     from ngsupport.multires_mesh import multires_mesh_index
     return multires_mesh_index(server, uuid, instance, config, body)
 
 
 @app.route('/multires-mesh/<server>/<uuid>/<instance>/<config>/<int:body>')
+@app.route('/multires-mesh/<server>/<uuid>/<instance>/<config>/volume/mesh/<int:body>')
 def _multires_mesh_data(server, uuid, instance, config, body):
     from ngsupport.multires_mesh import multires_mesh_data
     return multires_mesh_data(server, uuid, instance, config, body)
@@ -74,6 +77,12 @@ def _multires_mesh_data(server, uuid, instance, config, body):
 def _multires_mesh_chunk(server, uuid, instance, config, body):
     from ngsupport.multires_mesh import multires_mesh_chunk
     return multires_mesh_chunk(server, uuid, instance, config, body)
+
+
+@app.route('/multires-mesh/<server>/<uuid>/<instance>/<config>/volume/info')
+def _multires_mesh_volume_info(server, uuid, instance, config):
+    from ngsupport.multires_mesh import multires_mesh_volume_info
+    return multires_mesh_volume_info(server, uuid, instance, config)
 
 
 @app.route('/multires-mesh/<server>/<uuid>/<instance>/<config>/supervoxels/info')

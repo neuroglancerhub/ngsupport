@@ -840,3 +840,42 @@ def test_sv_chunks_generated_by_workers(service, sv_config, chunk_workers):
                for u in chunk_workers)
     _num_lods, fragments = _parse_manifest(r.data)
     _fetch_all_fragments(client, fragments, SV_SOURCE, 7)
+
+
+VOLUME = f'{SOURCE}/volume'
+
+
+def test_volume_info(service, monkeypatch):
+    import neuclease.dvid
+    client, dvid = service
+
+    # Without bounds from DVID, nominal ones are used.
+    info = client.get(f'{VOLUME}/info').get_json()
+    assert info['@type'] == 'neuroglancer_multiscale_volume'
+    assert info['type'] == 'segmentation'
+    assert info['mesh'] == 'mesh'
+    assert info['scales'][0]['resolution'] == [8.0, 8.0, 8.0]
+    assert info['scales'][0]['key'] == '8_8_8'
+    assert info['scales'][0]['size'] == [1, 1, 1]
+
+    extended = {'VoxelSize': [16.0, 16.0, 15.0], 'BlockSize': [64, 64, 64],
+                'MinPoint': [0, 10, 20], 'MaxPoint': [99, 199, 299]}
+    monkeypatch.setattr(neuclease.dvid, 'fetch_instance_info', lambda *args, **kwargs: {'Extended': extended})
+    scale = client.get(f'{VOLUME}/info').get_json()['scales'][0]
+    assert scale == {'key': '16_16_15', 'resolution': [16.0, 16.0, 15.0], 'chunk_sizes': [[64, 64, 64]],
+                     'voxel_offset': [0, 10, 20], 'size': [100, 190, 280], 'encoding': 'raw'}
+
+    assert client.get(SOURCE.replace('/test', '/nosuchconfig') + '/volume/info').status_code == 404
+
+
+def test_volume_mesh_alias(service):
+    """'<config>/volume/mesh' behaves just like '<config>'."""
+    client, dvid = service
+    assert client.get(f'{VOLUME}/mesh/info').get_json() == client.get(f'{SOURCE}/info').get_json()
+
+    r = client.get(f'{VOLUME}/mesh/1.index')
+    assert r.status_code == 200, r.data
+    assert r.data == client.get(f'{SOURCE}/1.index').data
+    _num_lods, fragments = _parse_manifest(r.data)
+    _fetch_all_fragments(client, fragments, f'{VOLUME}/mesh')
+    assert dvid.sparsevol_requests == 27
