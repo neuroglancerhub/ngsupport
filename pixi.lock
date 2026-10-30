@@ -224,7 +224,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/zipp-4.1.1-pyh5ded981_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/zope.event-6.2-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/flyem-forge/noarch/confiddler-0.1.5-pyh8a5b993_0.tar.bz2
-      - conda: https://conda.anaconda.org/flyem-forge/noarch/neuclease-0.100.post0.dev20-0_gc8c76fe.conda
+      - conda: https://conda.anaconda.org/flyem-forge/noarch/neuclease-0.100.post0.dev22-0_g807f76a.conda
       - conda: https://conda.anaconda.org/flyem-forge/noarch/vol2mesh-0.3.post10-0_g149e8c2.conda
       - pypi: https://files.pythonhosted.org/packages/1c/b1/1831dd8c9b06c013085d31a2ac4f03392d43bd36bfc6ff591a08bcedc1cf/ml_dtypes-0.6.0-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/33/a0/550eec327e5f5c7b732531c489f5307efec41f047b0d703bd4ca1e5ad2db/httplib2-0.32.0-py3-none-any.whl
@@ -436,7 +436,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/zope.interface-8.7-py314hd98292b_0.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/zstd-1.5.7-hf451053_7.conda
       - conda: https://conda.anaconda.org/flyem-forge/noarch/confiddler-0.1.5-pyh8a5b993_0.tar.bz2
-      - conda: https://conda.anaconda.org/flyem-forge/noarch/neuclease-0.100.post0.dev20-0_gc8c76fe.conda
+      - conda: https://conda.anaconda.org/flyem-forge/noarch/neuclease-0.100.post0.dev22-0_g807f76a.conda
       - conda: https://conda.anaconda.org/flyem-forge/noarch/vol2mesh-0.3.post10-0_g149e8c2.conda
       - pypi: https://files.pythonhosted.org/packages/33/a0/550eec327e5f5c7b732531c489f5307efec41f047b0d703bd4ca1e5ad2db/httplib2-0.32.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/35/eb/185ddb74fbe5644081bd535800143e3d647850b3eff1d43de6c8d5d7eab8/tensorstore-0.1.86-cp314-cp314-macosx_11_0_arm64.whl
@@ -5736,7 +5736,7 @@ packages:
   license: MIT
   license_family: MIT
   purls:
-  - pkg:pypi/ruamel-yaml-clib?source=compressed-mapping
+  - pkg:pypi/ruamel-yaml-clib?source=hash-mapping
   run_exports: {}
   size: 127818
   timestamp: 1788881217705
@@ -5835,7 +5835,7 @@ packages:
   license: BSD-3-Clause
   license_family: BSD
   purls:
-  - pkg:pypi/ujson?source=compressed-mapping
+  - pkg:pypi/ujson?source=hash-mapping
   run_exports: {}
   size: 58188
   timestamp: 1788568540845
@@ -5973,10 +5973,10 @@ packages:
   license: BSD-3-Clause
   size: 15331
   timestamp: 1723033360887
-- conda: https://conda.anaconda.org/flyem-forge/noarch/neuclease-0.100.post0.dev20-0_gc8c76fe.conda
+- conda: https://conda.anaconda.org/flyem-forge/noarch/neuclease-0.100.post0.dev22-0_g807f76a.conda
   noarch: python
-  sha256: 77eaacf200a285a3b02467d856aa34c8a2ee16a7661dc80403a91398843881a0
-  md5: e5e04c4fab3e2de78131ee5c608979dc
+  sha256: 3df46bd6d2e102b5649a4e973916bd62fb5e814a3e770a2c7d76f97e78344ad9
+  md5: 2413792139bd985dd558289d4a7e8924
   depends:
   - asciitree
   - confiddler
@@ -6002,8 +6002,8 @@ packages:
   - vigra
   - zarr
   license: BSD (3-clause)
-  size: 490477
-  timestamp: 1793331550221
+  size: 493211
+  timestamp: 1793335393912
 - conda: https://conda.anaconda.org/flyem-forge/noarch/vol2mesh-0.3.post10-0_g149e8c2.conda
   build_number: 0
   noarch: python

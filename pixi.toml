@@ -14,7 +14,7 @@ flask-cors = ">=6.0.5,<7"
 flask-compress = ">=1.26,<2"
 gunicorn = ">=26.2.0,<27"
 google-cloud-storage = ">=3.17.0,<4"
-neuclease = ">=0.100.post0.dev20,<0.101"
+neuclease = ">=0.100.post0.dev22,<0.101"
 vol2mesh = ">=0.3.post10,<0.4"
 trimesh = ">=5.2.0,<6"  # Used by vol2mesh.multires (multires-mesh endpoints)
 
